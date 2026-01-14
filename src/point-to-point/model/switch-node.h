@@ -49,6 +49,11 @@ class SwitchNode : public Node {
     uint32_t m_drill_candidate;                               // always 2 (power of two)
     std::map<uint32_t, uint32_t> m_previousBestInterfaceMap;  // <dip, previousBestInterface>
     uint32_t CalculateInterfaceLoad(uint32_t interface);      // Get the load of a interface
+    // Hybrid (lb_mode = 10): ECMP for small flows, DRILL for large flows
+    uint32_t DoLbHybrid(Ptr<const Packet> p, const CustomHeader &ch,
+                       const std::vector<int> &nexthops);
+    std::map<uint64_t, bool> m_flowUseDrill;                  // <flowHash, useDrill> per flow
+    std::map<uint64_t, uint64_t> m_flowByteCount;             // <flowHash, byteCount> track flow size
     // Conga (lb_mode = 3)
     uint32_t DoLbConga(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
     // Conga (lb_mode = 6)

@@ -1,0 +1,96 @@
+# ============================================================
+# Hybrid Load Balancing Mode Configuration Example
+# LB_MODE = 10 (ECMP for small flows, DRILL for large flows)
+# ============================================================
+
+# Basic topology and traffic
+TOPOLOGY_FILE config/leaf_spine_128_100G_OS2.txt
+FLOW_FILE config/L_40.00_CDF_AliStorage2019_N_128_T_100ms_B_100_flow.txt
+
+# Output files
+FLOW_INPUT_FILE mix/output/test/test_in.txt
+CNP_OUTPUT_FILE mix/output/test/test_out_cnp.txt
+FCT_OUTPUT_FILE mix/output/test/test_out_fct.txt
+PFC_OUTPUT_FILE mix/output/test/test_out_pfc.txt
+QLEN_MON_FILE mix/output/test/test_out_qlen.txt
+UPLINK_MON_FILE mix/output/test/test_out_uplink.txt
+CONN_MON_FILE mix/output/test/test_out_conn.txt
+
+# Monitoring timing
+QLEN_MON_START 2.0
+QLEN_MON_END 2.5
+SW_MONITORING_INTERVAL 10000
+
+# Traffic generation
+FLOWGEN_START_TIME 2.0
+FLOWGEN_STOP_TIME 2.5
+BUFFER_SIZE 9
+
+# Congestion control and load balancing
+CC_MODE 1                          # DCQCN
+LB_MODE 10                         # HYBRID MODE (ECMP + DRILL)
+ENABLE_PFC 1
+ENABLE_IRN 0
+
+# ========== HYBRID MODE PARAMETERS ==========
+LB_HYBRID_ENABLED 1                # Enable hybrid mode
+LB_HYBRID_THRESHOLD 100000         # Flow size threshold: 100KB
+                                     # Flows < 100KB use ECMP
+                                     # Flows >= 100KB use DRILL
+LB_HYBRID_RATIO 0.5                # Alternative: ratio mode (if threshold=0)
+                                     # 50% of flows use DRILL
+# =============================================
+
+# ConWeave parameters (not used in hybrid mode, but required)
+CONWEAVE_TX_EXPIRY_TIME 1000
+CONWEAVE_REPLY_TIMEOUT_EXTRA 4
+CONWEAVE_PATH_PAUSE_TIME 16
+CONWEAVE_EXTRA_VOQ_FLUSH_TIME 32
+CONWEAVE_DEFAULT_VOQ_WAITING_TIME 400
+
+# DCQCN parameters
+ALPHA_RESUME_INTERVAL 1
+RATE_DECREASE_INTERVAL 4
+CLAMP_TARGET_RATE 0
+RP_TIMER 300
+FAST_RECOVERY_TIMES 1
+EWMA_GAIN 0.00390625
+RATE_AI 1000Mb/s
+RATE_HAI 3000Mb/s
+MIN_RATE 100Mb/s
+DCTCP_RATE_AI 1000Mb/s
+
+# Network parameters
+ERROR_RATE_PER_LINK 0.0000
+L2_CHUNK_SIZE 4000
+L2_ACK_INTERVAL 1
+L2_BACK_TO_ZERO 0
+
+# Flow control parameters
+RATE_BOUND 1
+HAS_WIN 0
+VAR_WIN 0
+FAST_REACT 1
+MI_THRESH 0
+INT_MULTI 1
+GLOBAL_T 1
+U_TARGET 0.95
+MULTI_RATE 0
+SAMPLE_FEEDBACK 0
+
+# QCN/PFC
+ENABLE_QCN 1
+USE_DYNAMIC_PFC_THRESHOLD 1
+PACKET_PAYLOAD_SIZE 1000
+
+# Link configuration (none for this test)
+LINK_DOWN 0 0 0
+
+# ECN thresholds
+KMAX_MAP 1000000000 5
+KMIN_MAP 1000000000 3
+PMAX_MAP 1000000000 0.5
+
+# Load
+LOAD 40.0
+RANDOM_SEED 1

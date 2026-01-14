@@ -146,6 +146,65 @@ uint32_t SwitchNode::DoLbDrill(Ptr<const Packet> p, const CustomHeader &ch,
     return leastLoadInterface;
 }
 
+/*-----------------HYBRID (ECMP + DRILL)-----------------*/
+uint32_t SwitchNode::DoLbHybrid(Ptr<const Packet> p, const CustomHeader &ch,
+                                const std::vector<int> &nexthops) {
+    // Calculate flow hash for tracking
+    union {
+        uint8_t u8[4 + 4 + 2 + 2];
+        uint32_t u32[3];
+    } key;
+    key.u32[0] = ch.sip;
+    key.u32[1] = ch.dip;
+    key.u32[2] = ch.udp.sport << 16 | ch.udp.dport;
+    uint64_t flowHash = ((uint64_t)key.u32[0] << 32) | key.u32[1];
+    uint64_t flowKey = ((uint64_t)key.u32[2] << 32) | flowHash;
+
+    // Get packet size
+    uint32_t pktSize = p->GetSize();
+
+    // Check if we've seen this flow before
+    bool useDrill = false;
+    auto it = m_flowUseDrill.find(flowKey);
+
+    if (it == m_flowUseDrill.end()) {
+        // New flow - decide based on ratio or will be determined by flow size
+        // For threshold-based: use ECMP initially, switch to DRILL if flow exceeds threshold
+        // For ratio-based: randomly decide
+
+        if (Settings::lb_hybrid_threshold > 0) {
+            // Threshold mode: start with ECMP, may switch to DRILL based on flow size
+            useDrill = false;
+            m_flowByteCount[flowKey] = 0;
+        } else {
+            // Ratio mode: randomly decide using hash
+            double ratio = Settings::lb_hybrid_ratio;
+            useDrill = ((double)(flowHash % 10000) / 10000.0) < ratio;
+        }
+        m_flowUseDrill[flowKey] = useDrill;
+    } else {
+        useDrill = it->second;
+    }
+
+    // Update flow byte count for threshold-based decision
+    if (Settings::lb_hybrid_threshold > 0 && !useDrill) {
+        m_flowByteCount[flowKey] += pktSize;
+
+        // Check if flow exceeded threshold - switch to DRILL
+        if (m_flowByteCount[flowKey] >= Settings::lb_hybrid_threshold) {
+            useDrill = true;
+            m_flowUseDrill[flowKey] = useDrill;
+        }
+    }
+
+    // Route based on decision
+    if (useDrill) {
+        return DoLbDrill(p, ch, nexthops);
+    } else {
+        return DoLbFlowECMP(p, ch, nexthops);
+    }
+}
+
 /*------------------ConWeave Dummy ----------------*/
 uint32_t SwitchNode::DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
                                   const std::vector<int> &nexthops) {
@@ -272,6 +331,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
             return DoLbLetflow(p, ch, nexthops);
         case 9:
             return DoLbConWeave(p, ch, nexthops); /** DUMMY: Do ECMP */
+        case 10:
+            return DoLbHybrid(p, ch, nexthops); /** HYBRID: ECMP + DRILL */
         default:
             std::cout << "Unknown lb_mode(" << Settings::lb_mode << ")" << std::endl;
             assert(false);

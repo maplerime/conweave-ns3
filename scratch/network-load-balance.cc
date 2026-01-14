@@ -487,10 +487,11 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
             standalone_fct);
 
     // for debugging
-    NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
-                 (Settings::ip_to_node_id(q->sip), Settings::ip_to_node_id(q->dip), q->sport,
-                  q->dport, q->m_size, q->startTime.GetTimeStep(),
-                  (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct));
+    NS_LOG_DEBUG(Settings::ip_to_node_id(q->sip) << " " << Settings::ip_to_node_id(q->dip) << " "
+                 << q->sport << " " << q->dport << " " << q->m_size << " "
+                 << q->startTime.GetTimeStep() << " "
+                 << (Simulator::Now() - q->startTime).GetTimeStep() << " "
+                 << standalone_fct);
     Settings::cnt_finished_flows++;
     fflush(fout);
 }
@@ -741,6 +742,13 @@ int main(int argc, char *argv[]) {
         while (!conf.eof()) {
             std::string key;
             conf >> key;
+            // Skip comments (lines starting with #) and empty keys
+            if (key.empty() || key[0] == '#') {
+                // Skip the rest of this line
+                std::string dummy;
+                std::getline(conf, dummy);
+                continue;
+            }
             if (key.compare("FLOW_INPUT_FILE") == 0) {
                 std::string v;
                 conf >> v;
@@ -761,6 +769,21 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 lb_mode = v;
                 std::cerr << "LB_MODE\t\t\t" << lb_mode << "\n";
+            } else if (key.compare("LB_HYBRID_ENABLED") == 0) {
+                uint32_t v;
+                conf >> v;
+                Settings::lb_hybrid_enabled = v;
+                std::cerr << "LB_HYBRID_ENABLED\t\t\t" << Settings::lb_hybrid_enabled << "\n";
+            } else if (key.compare("LB_HYBRID_THRESHOLD") == 0) {
+                uint32_t v;
+                conf >> v;
+                Settings::lb_hybrid_threshold = v;
+                std::cerr << "LB_HYBRID_THRESHOLD\t\t\t" << Settings::lb_hybrid_threshold << "\n";
+            } else if (key.compare("LB_HYBRID_RATIO") == 0) {
+                double v;
+                conf >> v;
+                Settings::lb_hybrid_ratio = v;
+                std::cerr << "LB_HYBRID_RATIO\t\t\t" << Settings::lb_hybrid_ratio << "\n";
             } else if (key.compare("SW_MONITORING_INTERVAL") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1323,8 +1346,8 @@ int main(int argc, char *argv[]) {
             sw->m_mmu->ConfigBufferSize(buffer_size * 1024 *
                                         1024);  // default 0, specify in run.py!!
             sw->m_mmu->node_id = sw->GetId();
-            NS_LOG_INFO("Node %u : Broadcom switch (%u ports / %gMB MMU)\n" %
-                        (i, sw->GetNDevices() - 1, sw->m_mmu->GetMmuBufferBytes() / 1000000.));
+            NS_LOG_INFO("Node " << i << " : Broadcom switch (" << sw->GetNDevices() - 1
+                        << " ports / " << sw->m_mmu->GetMmuBufferBytes() / 1000000. << "MB MMU)");
         }
     }
 
@@ -1680,7 +1703,7 @@ int main(int argc, char *argv[]) {
             if (i->first->GetNodeType() == 1) {
                 Ptr<Node> node = i->first;
                 Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);  // switch
-                NS_LOG_INFO("Switch Info - ID:%u, ToR:%d\n" % (sw->GetId(), sw->m_isToR));
+                NS_LOG_INFO("Switch Info - ID:" << sw->GetId() << ", ToR:" << sw->m_isToR);
                 if (lb_mode == 3) {
                     sw->m_mmu->m_congaRouting.SetConstants(conga_dreTime, conga_agingTime,
                                                            conga_flowletTimeout, conga_quantizeBit,

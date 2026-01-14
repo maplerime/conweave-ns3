@@ -46,6 +46,11 @@ LB_MODE {lb_mode}
 ENABLE_PFC {enabled_pfc}
 ENABLE_IRN {enabled_irn}
 
+# Hybrid mode parameters (only used when LB_MODE = 10)
+LB_HYBRID_ENABLED {lb_hybrid_enabled}
+LB_HYBRID_THRESHOLD {lb_hybrid_threshold}
+LB_HYBRID_RATIO {lb_hybrid_ratio}
+
 CONWEAVE_TX_EXPIRY_TIME {cwh_tx_expiry_time}
 CONWEAVE_REPLY_TIMEOUT_EXTRA {cwh_extra_reply_deadline}
 CONWEAVE_PATH_PAUSE_TIME {cwh_path_pause_time}
@@ -107,6 +112,7 @@ lb_modes = {
     "conga": 3,
     "letflow": 6,
     "conweave": 9,
+    "hybrid": 10,           # ECMP + DRILL hybrid mode
 }
 
 topo2bdp = {
@@ -149,6 +155,13 @@ def main():
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
                         type=int, default=10000, help="interval of sampling statistics for queue status (default: 10000ns)")
+
+    # #### HYBRID MODE PARAMETERS ####
+    parser.add_argument('--hybrid_threshold', dest='hybrid_threshold', action='store',
+                        type=int, default=100000, help="Hybrid mode: flow size threshold in bytes (flows >= threshold use DRILL, default: 100KB)")
+    parser.add_argument('--hybrid_ratio', dest='hybrid_ratio', action='store',
+                        type=float, default=0.5, help="Hybrid mode: ratio of flows using DRILL (0.0-1.0, only used if threshold=0, default: 0.5)")
+
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -369,7 +382,10 @@ def main():
                                         ai=ai, hai=hai, dctcp_ai=dctcp_ai,
                                         has_win=has_win, var_win=var_win,
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
-                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map)
+                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
+                                        lb_hybrid_enabled=1 if lb_mode == 10 else 0,
+                                        lb_hybrid_threshold=args.hybrid_threshold,
+                                        lb_hybrid_ratio=args.hybrid_ratio)
     else:
         print("unknown cc:{}".format(args.cc))
 

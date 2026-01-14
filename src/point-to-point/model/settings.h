@@ -118,8 +118,13 @@ class Settings {
     static const uint32_t CONWEAVE_CTRL_DUMMY_INDEV = 88888888;  // just arbitrary
 
     /* load balancer */
-    // 0: flow ECMP, 2: DRILL, 3: Conga, 4: ConWeave
+    // 0: flow ECMP, 2: DRILL, 3: Conga, 4: ConWeave, 10: Hybrid (ECMP + DRILL)
     static uint32_t lb_mode;
+
+    // Hybrid mode parameters (lb_mode = 10)
+    static uint32_t lb_hybrid_enabled;      // Enable hybrid mode
+    static uint32_t lb_hybrid_threshold;    // Flow size threshold (bytes): < threshold use ECMP, >= threshold use DRILL
+    static double lb_hybrid_ratio;          // Ratio of flows using DRILL (0.0 - 1.0), alternative to threshold
 
     // for common setting
     static uint32_t packet_payload;

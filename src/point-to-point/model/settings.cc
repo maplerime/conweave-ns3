@@ -12,6 +12,11 @@ uint32_t Settings::ip_to_node_id(Ipv4Address ip) {
 /* others */
 uint32_t Settings::lb_mode = 0;
 
+/* hybrid mode */
+uint32_t Settings::lb_hybrid_enabled = 0;
+uint32_t Settings::lb_hybrid_threshold = 100000;  // 100KB default threshold
+double Settings::lb_hybrid_ratio = 0.5;           // 50% use DRILL by default
+
 std::map<uint32_t, uint32_t> Settings::hostIp2IdMap;
 std::map<uint32_t, uint32_t> Settings::hostId2IpMap;
 

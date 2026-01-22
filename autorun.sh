@@ -32,7 +32,7 @@ python3 run.py --lb conga --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NE
 sleep 0.1
 python3 run.py --lb conweave --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_ratio 0.2 2>&1 > /dev/null &
+python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.2 2>&1 > /dev/null &
 sleep 0.1
 
 # IRN RDMA
@@ -45,7 +45,7 @@ python3 run.py --lb conga --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NE
 sleep 0.1
 python3 run.py --lb conweave --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_ratio 0.2 2>&1 > /dev/null &
+python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.2 2>&1 > /dev/null &
 sleep 0.1
 
 cecho "GREEN" "Runing all in parallel. Check the processors running on background!"

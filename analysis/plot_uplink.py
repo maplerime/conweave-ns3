@@ -26,6 +26,7 @@ lb_modes = {
     3: "conga",
     6: "letflow",
     9: "conweave",
+    10: "hybrid",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
@@ -203,7 +204,7 @@ def main():
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
         
-        lbmode_order = ["fecmp", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "hybrid", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]

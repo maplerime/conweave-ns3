@@ -117,7 +117,8 @@ lb_modes = {
 
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier -> all 100Gbps
-    "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps
+    "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps, 256 hosts
+    "fat_k8_320_100G_OS2": 182000,  # 3-tier -> all 100Gbps, 320 hosts
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t

@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "run.py", line 446, in <module>
+    main()
+  File "run.py", line 206, in main
+    oversub = int(topo.replace("\n", "").split("OS")[-1].replace(".txt", ""))
+ValueError: invalid literal for int() with base 10: 'fat_k8_320hosts'
+Generate a input traffic file...
+python ./traffic_gen/traffic_gen.py -c /home/eileen/ns-allinone-3.19/ns-3.19/../traffic_gen/AliStorage2019.txt -n 320 -l 0.25 -b 100G -t 0.1 -o /home/eileen/ns-allinone-3.19/ns-3.19/config/L_25.00_CDF_AliStorage2019_N_320_T_100ms_B_100_flow.txt
+All NIC bandwidth is 100Gbps
+The new directory is created  - /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/829096425/
+Config filename:/home/eileen/ns-allinone-3.19/ns-3.19/mix/output/829096425/config.txt
+ERROR - topology is not registered in run.py!!
+Input traffic file with load:25.00, cdf:AliStorage2019, n_host:320 already exists
+All NIC bandwidth is 100Gbps
+The new directory is created  - /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/911997732/
+Config filename:/home/eileen/ns-allinone-3.19/ns-3.19/mix/output/911997732/config.txt
+ERROR - topology is not registered in run.py!!

@@ -1388,7 +1388,8 @@ int main(int argc, char *argv[]) {
     // manually type BDP
     std::map<std::string, uint32_t> topo2bdpMap;
     topo2bdpMap[std::string("leaf_spine_128_100G_OS2")] = 104000;  // RTT=8320
-    topo2bdpMap[std::string("fat_k8_100G_OS2")] = 156000;      // RTT=12480 --> all 100G links
+    topo2bdpMap[std::string("fat_k8_100G_OS2")] = 156000;      // RTT=12480 --> all 100G links, 256 hosts
+    topo2bdpMap[std::string("fat_k8_320_100G_OS2")] = 182000;  // RTT=14560 --> all 100G links, 320 hosts
 
     // topology_file
     bool found_topo2bdpMap = false;

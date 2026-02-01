@@ -13,8 +13,8 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
 cecho "GREEN" "Running RDMA Network Load Balancing Simulations (leaf-spine topology)"
 
 TOPOLOGY="fat_k8_320_100G_OS2" # or, fat_k8_100G_OS2
-NETLOAD="80" # network load 50%
-RUNTIME="0.1" # 0.1 second (traffic generation)
+NETLOAD="40" # network load 50%
+RUNTIME="0.01" # 0.01 second (traffic generation)
 
 cecho "YELLOW" "\n----------------------------------"
 cecho "YELLOW" "TOPOLOGY: ${TOPOLOGY}" 
@@ -26,38 +26,22 @@ cecho "YELLOW" "----------------------------------\n"
 cecho "GREEN" "Run Lossless RDMA experiments..."
 python3 run.py --lb fecmp --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null & 
 sleep 5
-python3 run.py --lb letflow --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb conga --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb conweave --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
 python3 run.py --lb drill --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.95 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.9 2>&1 > /dev/null &
-sleep 0.1
 python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.85 2>&1 > /dev/null &
+sleep 0.1
+python3 run.py --lb flowslice --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 16 --fs_max_slice 64 --fs_safety_factor 0.8 2>&1 > /dev/null &
 sleep 0.1
 
 # IRN RDMA
 cecho "GREEN" "Run IRN RDMA experiments..."
 python3 run.py --lb fecmp --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 5
-python3 run.py --lb letflow --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb conga --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb conweave --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-sleep 0.1
 python3 run.py --lb drill --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.95 2>&1 > /dev/null &
-sleep 0.1
-python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.9 2>&1 > /dev/null &
-sleep 0.1
 python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.85 2>&1 > /dev/null &
+sleep 0.1
+python3 run.py --lb flowslice --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 16 --fs_max_slice 64 --fs_safety_factor 0.8 2>&1 > /dev/null &
 sleep 0.1
 
 cecho "GREEN" "Runing all in parallel. Check the processors running on background!"

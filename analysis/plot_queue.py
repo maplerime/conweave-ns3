@@ -26,10 +26,13 @@ lb_modes = {
     6: "letflow",
     9: "conweave",
     10: "hybrid",
+    11: "flowslice",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
-    "fat_k4_100G_OS2": 153000, # 3-tier -> core 400G
+    "fat_k4_100G_OS2": 153000,         # 3-tier -> core 400G
+    "fat_k8_100G_OS2": 156000,         # 3-tier -> 256 hosts
+    "fat_k8_320_100G_OS2": 156000,     # 3-tier -> 320 hosts
 }
 
 C = [
@@ -143,10 +146,25 @@ def main():
                     config_id = parsed_line[1]
                     cc_mode = cc_modes[int(parsed_line[2])]
                     lb_mode = lb_modes[int(parsed_line[3])]
+                    # Handle old .history format (without hybrid_ratio) and new format (with hybrid_ratio)
+                    hybrid_ratio = 0.5  # default
+                    flowslice_size = 0  # default for flowslice
+                    if len(parsed_line) > 18:
+                        # New format with hybrid_ratio column (index 18)
+                        hybrid_ratio = float(parsed_line[18]) if parsed_line[18] else 0.5
+                    # Always read from config.txt to get correct values
+                    config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                    if os.path.exists(config_file):
+                        with open(config_file, "r") as cf:
+                            for line_cf in cf:
+                                if "LB_HYBRID_RATIO" in line_cf:
+                                    hybrid_ratio = float(line_cf.split()[1])
+                                elif "FLOWSLICE_SLICE_SIZE" in line_cf:
+                                    flowslice_size = int(line_cf.split()[1])
 
                     # filter only for ConWeave
-                    if lb_mode != "conweave":
-                        continue
+                    # if lb_mode != "conweave":
+                    #     continue
 
                     encoded_fc = (int(parsed_line[9]), int(parsed_line[10]))
                     if encoded_fc == (0, 1):
@@ -159,9 +177,9 @@ def main():
                     netload = parsed_line[16]
                     key = (topo, netload, flow_control)
                     if key not in map_key_to_id:
-                        map_key_to_id[key] = [[config_id, lb_mode]]
+                        map_key_to_id[key] = [[config_id, lb_mode, hybrid_ratio, flowslice_size]]
                     else:
-                        map_key_to_id[key].append([config_id, lb_mode])
+                        map_key_to_id[key].append([config_id, lb_mode, hybrid_ratio, flowslice_size])
 
     
     for k, v in map_key_to_id.items():
@@ -174,19 +192,34 @@ def main():
         for vv in v:
             config_id = vv[0]
             lb_mode = vv[1]
+            hybrid_ratio = vv[2] if len(vv) > 2 else 0.5
+            flowslice_size = vv[3] if len(vv) > 3 else 0
             filename_voq_volume = output_dir + "/{id}/{id}_out_voq_cdf.txt".format(id=config_id)
+            if not os.path.exists(filename_voq_volume):
+                print(f"Warning: {filename_voq_volume} not found, skipping...")
+                continue
             data_voq_volume = {"x": [], "y": []}
             with open(filename_voq_volume, "r") as f:
                 for line in f.readlines():
                     parsed_line = line.replace("\n","").split(" ")
                     data_voq_volume["x"].append(float(parsed_line[0]))
-                    data_voq_volume["y"].append(float(parsed_line[3])) 
+                    data_voq_volume["y"].append(float(parsed_line[3]))
 
+            # Add hybrid ratio to legend label for hybrid mode
+            # Add flowslice size to legend label for flowslice mode
+            label = "{}".format(lb_mode)
+            if lb_mode == "hybrid":
+                label = "{} ({:.0f}%)".format(lb_mode, hybrid_ratio * 100)
+            elif lb_mode == "flowslice":
+                if flowslice_size > 0:
+                    label = "{} ({}KB)".format(lb_mode, flowslice_size // 1024)
+                else:
+                    label = "{} (auto)".format(lb_mode)
             ax.plot(data_voq_volume["x"],
                     data_voq_volume["y"],
                     markersize=0,
                     linewidth=3.0,
-                    label="{}".format(lb_mode))
+                    label=label)
             
         ax.legend(bbox_to_anchor=(0.0, 1.2), loc="upper left", borderaxespad=0,
             frameon=False, fontsize=12, facecolor='white', ncol=2,

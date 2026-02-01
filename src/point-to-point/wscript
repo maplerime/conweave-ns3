@@ -27,6 +27,8 @@ def build(bld):
         'model/letflow-routing.cc',
         'model/conweave-routing.cc',
         'model/conweave-voq.cc',
+        'model/flowslice-sender.cc',
+        'model/flowslice-reorder.cc',
 		'helper/selective-packet-queue.cc',
         ]
 
@@ -63,6 +65,8 @@ def build(bld):
         'model/letflow-routing.h',
         'model/conweave-routing.h',
         'model/conweave-voq.h',
+        'model/flowslice-sender.h',
+        'model/flowslice-reorder.h',
 		'helper/selective-packet-queue.h',
         ]
 

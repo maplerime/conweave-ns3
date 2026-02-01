@@ -27,10 +27,13 @@ lb_modes = {
     6: "letflow",
     9: "conweave",
     10: "hybrid",
+    11: "flowslice",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
-    "fat_k4_100G_OS2": 153000, # 3-tier -> core 400G
+    "fat_k4_100G_OS2": 153000,         # 3-tier -> core 400G
+    "fat_k8_100G_OS2": 156000,         # 3-tier -> 256 hosts
+    "fat_k8_320_100G_OS2": 156000,     # 3-tier -> 320 hosts
 }
 
 C = [
@@ -71,6 +74,11 @@ H = [
 
 def getCdfFromArray(data_arr):
     v_sorted = np.sort(data_arr)
+
+    # Handle empty input
+    if len(v_sorted) == 0:
+        return [[0, 0, 0, 0]]
+
     p = 1. * np.arange(len(data_arr)) / (len(data_arr) - 1)
 
     od = []
@@ -90,7 +98,9 @@ def getCdfFromArray(data_arr):
             bkt[1] = 1
             bkt[2] = n_accum
             bkt[3] = p[i]
-    if od[-1][0] != bkt[0]:
+    if len(od) > 0 and od[-1][0] != bkt[0]:
+        od.append(bkt)
+    elif len(od) == 0:
         od.append(bkt)
     od.pop(0)
     return od
@@ -176,6 +186,21 @@ def main():
                     config_id = parsed_line[1]
                     cc_mode = cc_modes[int(parsed_line[2])]
                     lb_mode = lb_modes[int(parsed_line[3])]
+                    # Handle old .history format (without hybrid_ratio) and new format (with hybrid_ratio)
+                    hybrid_ratio = 0.5  # default
+                    flowslice_size = 0  # default for flowslice
+                    if len(parsed_line) > 18:
+                        # New format with hybrid_ratio column (index 18)
+                        hybrid_ratio = float(parsed_line[18]) if parsed_line[18] else 0.5
+                    # Always read from config.txt to get correct values
+                    config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                    if os.path.exists(config_file):
+                        with open(config_file, "r") as cf:
+                            for line_cf in cf:
+                                if "LB_HYBRID_RATIO" in line_cf:
+                                    hybrid_ratio = float(line_cf.split()[1])
+                                elif "FLOWSLICE_SLICE_SIZE" in line_cf:
+                                    flowslice_size = int(line_cf.split()[1])
                     encoded_fc = (int(parsed_line[9]), int(parsed_line[10]))
                     if encoded_fc == (0, 1):
                         flow_control = "IRN"
@@ -187,9 +212,9 @@ def main():
                     netload = parsed_line[16]
                     key = (topo, netload, flow_control)
                     if key not in map_key_to_id:
-                        map_key_to_id[key] = [[config_id, lb_mode]]
+                        map_key_to_id[key] = [[config_id, lb_mode, hybrid_ratio, flowslice_size]]
                     else:
-                        map_key_to_id[key].append([config_id, lb_mode])
+                        map_key_to_id[key].append([config_id, lb_mode, hybrid_ratio, flowslice_size])
 
     for k, v in map_key_to_id.items():
         ################## Uplink CDF plotting ##################
@@ -204,15 +229,20 @@ def main():
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
         
-        lbmode_order = ["fecmp", "drill", "hybrid", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "hybrid", "flowslice", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
                 lb_mode = vv[1]
+                hybrid_ratio = vv[2] if len(vv) > 2 else 0.5
+                flowslice_size = vv[3] if len(vv) > 3 else 0
 
                 if lb_mode == tgt_lbmode:
                     # plotting
                     filename_uplink = output_dir + "/{id}/{id}_out_uplink.txt".format(id=config_id)
+                    if not os.path.exists(filename_uplink):
+                        print(f"Warning: {filename_uplink} not found, skipping...")
+                        continue
                     port_list = set()
 
                     with open(filename_uplink, "r") as f:
@@ -222,7 +252,12 @@ def main():
                         diff_data = {}
                         last_ts = 0
                         for line in f.readlines():
+                            line = line.strip()
+                            if not line:
+                                continue
                             parsed_line = line.replace("\n", "").split(",")
+                            if len(parsed_line) < 4:
+                                continue
                             now_ts = int(parsed_line[0])
                             now_swid = int(parsed_line[1])
                             now_portid = int(parsed_line[2])
@@ -264,20 +299,38 @@ def main():
                             
                         ts_data_arr = []
                         for switch_id, vvvv in switch_diff_data.items():
-                            v_t = np.array(vvvv).T.tolist()
-                            for vec in v_t:
-                                if np.average(vec) == 0:
-                                    continue
-                                val = (np.max(vec) - np.min(vec)) / np.average(vec) * 100
-                                ts_data_arr.append(val)
+                            try:
+                                v_t = np.array(vvvv).T.tolist()
+                                for vec in v_t:
+                                    if np.average(vec) == 0:
+                                        continue
+                                    val = (np.max(vec) - np.min(vec)) / np.average(vec) * 100
+                                    ts_data_arr.append(val)
+                            except (ValueError, TypeError):
+                                # Skip data with inconsistent lengths
+                                continue
+
+                        # Skip if no valid data
+                        if len(ts_data_arr) == 0:
+                            continue
 
                         cdf_ts_data_arr = getCdfFromArray(ts_data_arr)
-                        
+
+                        # Add hybrid ratio to legend label for hybrid mode
+                        # Add flowslice size to legend label for flowslice mode
+                        label = "{}".format(lb_mode)
+                        if lb_mode == "hybrid":
+                            label = "{} ({:.0f}%)".format(lb_mode, hybrid_ratio * 100)
+                        elif lb_mode == "flowslice":
+                            if flowslice_size > 0:
+                                label = "{} ({}KB)".format(lb_mode, flowslice_size // 1024)
+                            else:
+                                label = "{} (auto)".format(lb_mode)
                         ax.plot([x[0] for x in cdf_ts_data_arr],
                                 [x[3] for x in cdf_ts_data_arr],
                                 markersize=0,
                                 linewidth=3.0,
-                                label="{}".format(lb_mode))
+                                label=label)
         
         ax.legend(frameon=False, fontsize=12, facecolor='white')
         

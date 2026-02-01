@@ -126,6 +126,12 @@ class Settings {
     static uint32_t lb_hybrid_threshold;    // Flow size threshold (bytes): < threshold use ECMP, >= threshold use DRILL
     static double lb_hybrid_ratio;          // Ratio of flows using DRILL (0.0 - 1.0), alternative to threshold
 
+    // FlowSlice parameters (lb_mode = 11)
+    // Dynamic slice size calculation based on measured RTT is now automatic
+    static uint32_t flowSlice_min_slice;    // Minimum slice size in packets
+    static uint32_t flowSlice_max_slice;    // Maximum slice size in packets
+    static double flowSlice_safety_factor;   // Safety factor for slice size calculation
+
     // for common setting
     static uint32_t packet_payload;
 

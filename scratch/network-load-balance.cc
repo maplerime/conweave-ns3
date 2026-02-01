@@ -35,6 +35,7 @@
 #include "ns3/broadcom-node.h"
 #include "ns3/conga-routing.h"
 #include "ns3/conweave-voq.h"
+#include "ns3/flowslice-sender.h"
 #include "ns3/core-module.h"
 #include "ns3/error-model.h"
 #include "ns3/global-route-manager.h"
@@ -784,6 +785,21 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 Settings::lb_hybrid_ratio = v;
                 std::cerr << "LB_HYBRID_RATIO\t\t\t" << Settings::lb_hybrid_ratio << "\n";
+            } else if (key.compare("FLOWSLICE_MIN_SLICE") == 0) {
+                uint32_t v;
+                conf >> v;
+                Settings::flowSlice_min_slice = v;
+                std::cerr << "FLOWSLICE_MIN_SLICE\t\t\t" << Settings::flowSlice_min_slice << "\n";
+            } else if (key.compare("FLOWSLICE_MAX_SLICE") == 0) {
+                uint32_t v;
+                conf >> v;
+                Settings::flowSlice_max_slice = v;
+                std::cerr << "FLOWSLICE_MAX_SLICE\t\t\t" << Settings::flowSlice_max_slice << "\n";
+            } else if (key.compare("FLOWSLICE_SAFETY_FACTOR") == 0) {
+                double v;
+                conf >> v;
+                Settings::flowSlice_safety_factor = v;
+                std::cerr << "FLOWSLICE_SAFETY_FACTOR\t\t\t" << Settings::flowSlice_safety_factor << "\n";
             } else if (key.compare("SW_MONITORING_INTERVAL") == 0) {
                 uint32_t v;
                 conf >> v;

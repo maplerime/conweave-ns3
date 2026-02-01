@@ -5,6 +5,7 @@
 #include "ns3/conweave-routing.h"
 #include "ns3/double.h"
 #include "ns3/flow-id-tag.h"
+#include "ns3/flowslice-sender.h"
 #include "ns3/int-header.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/ipv4.h"
@@ -210,6 +211,78 @@ uint32_t SwitchNode::DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
                                   const std::vector<int> &nexthops) {
     return DoLbFlowECMP(p, ch, nexthops);  // flow ECMP (dummy)
 }
+
+/*------------------FlowSlice ----------------*/
+uint32_t SwitchNode::DoLbFlowSlice(Ptr<const Packet> p, const CustomHeader &ch,
+                                    const std::vector<int> &nexthops) {
+    // Try to get FlowSlice tag from packet
+    FlowSliceTag sliceTag;
+    bool hasSliceTag = p->PeekPacketTag(sliceTag);
+
+    uint64_t slice_id;
+    uint64_t flow_key;
+
+    if (hasSliceTag) {
+        // Packet already has FlowSlice tag from source ToR
+        slice_id = sliceTag.GetSliceId();
+        flow_key = sliceTag.GetFlowKey();
+    } else {
+        // Calculate flow hash for packets without tag (should not happen in normal flow)
+        union {
+            uint8_t u8[4 + 4 + 2 + 2];
+            uint32_t u32[3];
+        } key;
+        key.u32[0] = ch.sip;
+        key.u32[1] = ch.dip;
+        key.u32[2] = ch.udp.sport << 16 | ch.udp.dport;
+        uint64_t flowHash = ((uint64_t)key.u32[0] << 32) | key.u32[1];
+        flow_key = ((uint64_t)key.u32[2] << 32) | flowHash;
+        slice_id = flow_key << 16;  // Use slice 0 by default
+    }
+
+    // Check if we already have a port mapping for this slice
+    auto sliceIt = m_sliceIdToPort.find(slice_id);
+    if (sliceIt != m_sliceIdToPort.end()) {
+        // This slice already has a port mapping - use it
+        uint32_t out_port = sliceIt->second;
+
+        // Verify the port is still valid
+        bool valid = false;
+        for (auto port : nexthops) {
+            if (port == (int)out_port) {
+                valid = true;
+                break;
+            }
+        }
+
+        if (valid) {
+            return out_port;  // Return the cached port for this slice
+        } else {
+            // Port is no longer valid (topology change?) - remove mapping
+            m_sliceIdToPort.erase(slice_id);
+        }
+    }
+
+    // No port mapping for this slice yet - select based on shortest queue
+    uint32_t best_port = nexthops[0];
+    uint32_t min_queue = UINT32_MAX;
+
+    for (auto port : nexthops) {
+        uint32_t queue_size = CalculateInterfaceLoad(port);
+        if (queue_size < min_queue) {
+            min_queue = queue_size;
+            best_port = port;
+        }
+    }
+
+    // Cache the port mapping for this slice
+    m_sliceIdToPort[slice_id] = best_port;
+
+    // Also update DRILL's previous best interface for compatibility
+    m_previousBestInterfaceMap[ch.dip] = best_port;
+
+    return best_port;
+}
 /*----------------------------------*/
 
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex) {
@@ -333,6 +406,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
             return DoLbConWeave(p, ch, nexthops); /** DUMMY: Do ECMP */
         case 10:
             return DoLbHybrid(p, ch, nexthops); /** HYBRID: ECMP + DRILL */
+        case 11:
+            return DoLbFlowSlice(p, ch, nexthops); /** FLOWSLICE: RTT-based dynamic slicing */
         default:
             std::cout << "Unknown lb_mode(" << Settings::lb_mode << ")" << std::endl;
             assert(false);

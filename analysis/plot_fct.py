@@ -26,10 +26,13 @@ lb_modes = {
     6: "letflow",
     9: "conweave",
     10: "hybrid",
+    11: "flowslice",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
-    "fat_k4_100G_OS2": 153000, # 3-tier -> core 400G
+    "fat_k4_100G_OS2": 153000,         # 3-tier -> core 400G
+    "fat_k8_100G_OS2": 156000,         # 3-tier -> 256 hosts
+    "fat_k8_320_100G_OS2": 156000,     # 3-tier -> 320 hosts
 }
 
 C = [
@@ -124,11 +127,20 @@ def size2str(steps):
 
 def get_steps_from_raw(filename, time_start, time_end, step=5):
     # time_start = int(2.005 * 1000000000)
-    # time_end = int(3.0 * 1000000000) 
-    cmd_slowdown = "cat %s"%(filename)+" | awk '{ if ($6>"+"%d"%time_start+" && $6+$7<"+"%d"%(time_end)+") { slow=$7/$8; print slow<1?1:slow, $5} }' | sort -n -k 2"    
-    output_slowdown = subprocess.check_output(cmd_slowdown, shell=True)
+    # time_end = int(3.0 * 1000000000)
+    cmd_slowdown = "cat %s"%(filename)+" | awk '{ if ($6>"+"%d"%time_start+" && $6+$7<"+"%d"%(time_end)+") { slow=$7/$8; print slow<1?1:slow, $5} }' | sort -n -k 2"
+    try:
+        output_slowdown = subprocess.check_output(cmd_slowdown, shell=True)
+    except subprocess.CalledProcessError:
+        # No data in the file
+        output_slowdown = b""
     aa = output_slowdown.decode("utf-8").split('\n')[:-2]
     nn = len(aa)
+
+    if nn == 0:
+        # Return empty result structure
+        result = {"avg": [], "p99": [], "size": []}
+        return result
 
     # CDF of FCT
     res = [[i/100.] for i in range(0, 100, step)]
@@ -136,16 +148,24 @@ def get_steps_from_raw(filename, time_start, time_end, step=5):
         l = int(i * nn / 100)
         r = int((i+step) * nn / 100)
         fct_size = aa[l:r]
-        fct_size = [[float(x.split(" ")[0]), int(x.split(" ")[1])] for x in fct_size]
-        fct = sorted(map(lambda x: x[0], fct_size))
-        
-        res[int(i/step)].append(fct_size[-1][1]) # flow size
-        
-        res[int(i/step)].append(sum(fct) / len(fct)) # avg fct
-        res[int(i/step)].append(get_pctl(fct, 0.5)) # mid fct
-        res[int(i/step)].append(get_pctl(fct, 0.95)) # 95-pct fct
-        res[int(i/step)].append(get_pctl(fct, 0.99)) # 99-pct fct
-        res[int(i/step)].append(get_pctl(fct, 0.999)) # 99-pct fct
+        fct_size = [[float(x.split(" ")[0]), int(x.split(" ")[1])] for x in fct_size if x.strip()]
+
+        # Skip if no data in this percentile range
+        if len(fct_size) == 0:
+            res[int(i/step)].append(0) # flow size
+            res[int(i/step)].append(0) # avg fct
+            res[int(i/step)].append(0) # mid fct
+            res[int(i/step)].append(0) # 95-pct fct
+            res[int(i/step)].append(0) # 99-pct fct
+            res[int(i/step)].append(0) # 99.9-pct fct
+        else:
+            fct = sorted(map(lambda x: x[0], fct_size))
+            res[int(i/step)].append(fct_size[-1][1]) # flow size
+            res[int(i/step)].append(sum(fct) / len(fct)) # avg fct
+            res[int(i/step)].append(get_pctl(fct, 0.5)) # mid fct
+            res[int(i/step)].append(get_pctl(fct, 0.95)) # 95-pct fct
+            res[int(i/step)].append(get_pctl(fct, 0.99)) # 99-pct fct
+            res[int(i/step)].append(get_pctl(fct, 0.999)) # 99.9-pct fct
     
     # ## DEBUGING ###
     # print("{:5} {:10} {:5} {:5} {:5} {:5} {:5}  <<scale: {}>>".format("CDF", "Size", "Avg", "50%", "95%", "99%", "99.9%", "us-scale"))
@@ -190,6 +210,21 @@ def main():
                     config_id = parsed_line[1]
                     cc_mode = cc_modes[int(parsed_line[2])]
                     lb_mode = lb_modes[int(parsed_line[3])]
+                    # Handle old .history format (without hybrid_ratio) and new format (with hybrid_ratio)
+                    hybrid_ratio = 0.5  # default
+                    flowslice_size = 0  # default for flowslice
+                    if len(parsed_line) > 18:
+                        # New format with hybrid_ratio column (index 18)
+                        hybrid_ratio = float(parsed_line[18]) if parsed_line[18] else 0.5
+                    # Always read from config.txt to get correct values
+                    config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                    if os.path.exists(config_file):
+                        with open(config_file, "r") as cf:
+                            for line_cf in cf:
+                                if "LB_HYBRID_RATIO" in line_cf:
+                                    hybrid_ratio = float(line_cf.split()[1])
+                                elif "FLOWSLICE_SLICE_SIZE" in line_cf:
+                                    flowslice_size = int(line_cf.split()[1])
                     encoded_fc = (int(parsed_line[9]), int(parsed_line[10]))
                     if encoded_fc == (0, 1):
                         flow_control = "IRN"
@@ -201,9 +236,9 @@ def main():
                     netload = parsed_line[16]
                     key = (topo, netload, flow_control)
                     if key not in map_key_to_id:
-                        map_key_to_id[key] = [[config_id, lb_mode]]
+                        map_key_to_id[key] = [[config_id, lb_mode, hybrid_ratio, flowslice_size]]
                     else:
-                        map_key_to_id[key].append([config_id, lb_mode])
+                        map_key_to_id[key].append([config_id, lb_mode, hybrid_ratio, flowslice_size])
 
     for k, v in map_key_to_id.items():
 
@@ -222,31 +257,54 @@ def main():
         
         xvals = [i for i in range(STEP, 100 + STEP, STEP)]
 
-        lbmode_order = ["fecmp", "drill", "hybrid", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "hybrid", "flowslice", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
                 lb_mode = vv[1]
+                hybrid_ratio = vv[2] if len(vv) > 2 else 0.5
+                flowslice_size = vv[3] if len(vv) > 3 else 0
 
                 if lb_mode == tgt_lbmode:
                     # plotting
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
+                    if not os.path.exists(fct_slowdown):
+                        print(f"Warning: {fct_slowdown} not found, skipping...")
+                        continue
                     result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
-                    ax.plot(xvals,
+
+                    # 直接使用流大小作为 x 轴坐标
+                    # Add hybrid ratio to legend label for hybrid mode
+                    # Add flowslice size to legend label for flowslice mode
+                    label = "{}".format(lb_mode)
+                    if lb_mode == "hybrid":
+                        label = "{} ({:.0f}%)".format(lb_mode, hybrid_ratio * 100)
+                    elif lb_mode == "flowslice":
+                        if flowslice_size > 0:
+                            label = "{} ({}KB)".format(lb_mode, flowslice_size // 1024)
+                        else:
+                            label = "{} (auto)".format(lb_mode)
+                    ax.plot(result["size"],
                         result["avg"],
                         markersize=1.0,
                         linewidth=3.0,
-                        label="{}".format(lb_mode))
-                
+                        label=label)
+
         ax.legend(bbox_to_anchor=(0.0, 1.2), loc="upper left", borderaxespad=0,
                 frameon=False, fontsize=12, facecolor='white', ncol=2,
                 labelspacing=0.4, columnspacing=0.8)
-        
+
         ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
         ax.set_ylim(bottom=1)
+
+        # 设置均匀清晰的横坐标刻度
+        max_size = 2000000  # 2.0M bytes
+        # Uniform tick marks: 0, 200K, 400K, 600K, 800K, 1.0M, 1.2M, 1.4M, 1.6M, 1.8M, 2.0M
+        tick_positions = list(range(0, max_size + 1, 200000))
+        tick_labels = size2str(tick_positions)
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, fontsize=10.5)
+        ax.set_xlim(left=0, right=max_size)
         # ax.set_yscale("log")
 
         fig.tight_layout()
@@ -275,31 +333,53 @@ def main():
         
         xvals = [i for i in range(STEP, 100 + STEP, STEP)]
 
-        lbmode_order = ["fecmp", "drill", "hybrid", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "hybrid", "flowslice", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
                 lb_mode = vv[1]
+                hybrid_ratio = vv[2] if len(vv) > 2 else 0.5
+                flowslice_size = vv[3] if len(vv) > 3 else 0
 
                 if lb_mode == tgt_lbmode:
                     # plotting
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
+                    if not os.path.exists(fct_slowdown):
+                        continue
                     result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
-                    ax.plot(xvals,
+
+                    # 直接使用流大小作为 x 轴坐标
+                    # Add hybrid ratio to legend label for hybrid mode
+                    # Add flowslice size to legend label for flowslice mode
+                    label = "{}".format(lb_mode)
+                    if lb_mode == "hybrid":
+                        label = "{} ({:.0f}%)".format(lb_mode, hybrid_ratio * 100)
+                    elif lb_mode == "flowslice":
+                        if flowslice_size > 0:
+                            label = "{} ({}KB)".format(lb_mode, flowslice_size // 1024)
+                        else:
+                            label = "{} (auto)".format(lb_mode)
+                    ax.plot(result["size"],
                         result["p99"],
                         markersize=1.0,
                         linewidth=3.0,
-                        label="{}".format(lb_mode))
-                
+                        label=label)
+
         ax.legend(bbox_to_anchor=(0.0, 1.2), loc="upper left", borderaxespad=0,
                 frameon=False, fontsize=12, facecolor='white', ncol=2,
                 labelspacing=0.4, columnspacing=0.8)
-        
+
         ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
         ax.set_ylim(bottom=1)
+
+        # 设置均匀清晰的横坐标刻度
+        max_size = 2000000  # 2.0M bytes
+        # Uniform tick marks: 0, 200K, 400K, 600K, 800K, 1.0M, 1.2M, 1.4M, 1.6M, 1.8M, 2.0M
+        tick_positions = list(range(0, max_size + 1, 200000))
+        tick_labels = size2str(tick_positions)
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, fontsize=10.5)
+        ax.set_xlim(left=0, right=max_size)
         # ax.set_yscale("log")
 
         fig.tight_layout()

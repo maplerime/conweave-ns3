@@ -17,6 +17,11 @@ uint32_t Settings::lb_hybrid_enabled = 0;
 uint32_t Settings::lb_hybrid_threshold = 100000;  // 100KB default threshold
 double Settings::lb_hybrid_ratio = 0.5;           // 50% use DRILL by default
 
+/* flowslice mode */
+uint32_t Settings::flowSlice_min_slice = 1;      // 1 packet minimum
+uint32_t Settings::flowSlice_max_slice = 32;     // 32 packets maximum
+double Settings::flowSlice_safety_factor = 0.8;  // 80% safety factor
+
 std::map<uint32_t, uint32_t> Settings::hostIp2IdMap;
 std::map<uint32_t, uint32_t> Settings::hostId2IpMap;
 

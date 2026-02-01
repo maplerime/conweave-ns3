@@ -57,6 +57,12 @@ CONWEAVE_PATH_PAUSE_TIME {cwh_path_pause_time}
 CONWEAVE_EXTRA_VOQ_FLUSH_TIME {cwh_extra_voq_flush_time}
 CONWEAVE_DEFAULT_VOQ_WAITING_TIME {cwh_default_voq_waiting_time}
 
+# FlowSlice parameters (only used when LB_MODE = 11)
+# Dynamic slice size calculation based on measured RTT is automatic
+FLOWSLICE_MIN_SLICE {fs_min_slice}
+FLOWSLICE_MAX_SLICE {fs_max_slice}
+FLOWSLICE_SAFETY_FACTOR {fs_safety_factor}
+
 ALPHA_RESUME_INTERVAL 1
 RATE_DECREASE_INTERVAL 4
 CLAMP_TARGET_RATE 0
@@ -113,6 +119,7 @@ lb_modes = {
     "letflow": 6,
     "conweave": 9,
     "hybrid": 10,           # ECMP + DRILL hybrid mode
+    "flowslice": 11,        # FlowSlice: RTT-based dynamic flow slicing
 }
 
 topo2bdp = {
@@ -163,6 +170,14 @@ def main():
     parser.add_argument('--hybrid_ratio', dest='hybrid_ratio', action='store',
                         type=float, default=0.5, help="Hybrid mode: ratio of flows using DRILL (0.0-1.0, only used if threshold=0, default: 0.5)")
 
+    # #### FLOWSLICE PARAMETERS ####
+    # FlowSlice automatically calculates slice size based on measured RTT difference
+    parser.add_argument('--fs_min_slice', dest='fs_min_slice', action='store',
+                        type=int, default=1, help="FlowSlice: minimum slice size in packets (default: 1)")
+    parser.add_argument('--fs_max_slice', dest='fs_max_slice', action='store',
+                        type=int, default=32, help="FlowSlice: maximum slice size in packets (default: 32)")
+    parser.add_argument('--fs_safety_factor', dest='fs_safety_factor', action='store',
+                        type=float, default=0.8, help="FlowSlice: safety factor for slice size calculation (default: 0.8)")
 
     # #### CONWEAVE PARAMETERS ####
     # parser.add_argument('--cwh_extra_reply_deadline', dest='cwh_extra_reply_deadline', action='store',
@@ -323,7 +338,7 @@ def main():
     # record to history
     simulday = datetime.now().strftime("%m/%d/%y")
     with open("./mix/.history", "a") as history:
-        history.write("{simulday},{config_ID},{cc_mode},{lb_mode},{cwh_tx_expiry_time},{cwh_extra_reply_deadline},{cwh_path_pause_time},{cwh_extra_voq_flush_time},{cwh_default_voq_waiting_time},{pfc},{irn},{has_win},{var_win},{topo},{bw},{cdf},{load},{time}\n".format(
+        history.write("{simulday},{config_ID},{cc_mode},{lb_mode},{cwh_tx_expiry_time},{cwh_extra_reply_deadline},{cwh_path_pause_time},{cwh_extra_voq_flush_time},{cwh_default_voq_waiting_time},{pfc},{irn},{has_win},{var_win},{topo},{bw},{cdf},{load},{time},{hybrid_ratio}\n".format(
             simulday=simulday,
             config_ID=config_ID,
             cc_mode=cc_mode,
@@ -342,6 +357,7 @@ def main():
             cdf=cdf,
             load=netload,
             time=args.simul_time,
+            hybrid_ratio=args.hybrid_ratio,
         ))
 
     # 1 BDP calculation
@@ -386,7 +402,10 @@ def main():
                                         kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
                                         lb_hybrid_enabled=1 if lb_mode == 10 else 0,
                                         lb_hybrid_threshold=args.hybrid_threshold,
-                                        lb_hybrid_ratio=args.hybrid_ratio)
+                                        lb_hybrid_ratio=args.hybrid_ratio,
+                                        fs_min_slice=args.fs_min_slice,
+                                        fs_max_slice=args.fs_max_slice,
+                                        fs_safety_factor=args.fs_safety_factor)
     else:
         print("unknown cc:{}".format(args.cc))
 

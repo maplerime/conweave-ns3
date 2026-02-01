@@ -61,6 +61,17 @@ class SwitchNode : public Node {
     // ConWeave (lb_mode = 9)
     uint32_t DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
                            const std::vector<int> &nexthops);  // dummy
+    // FlowSlice (lb_mode = 11): RTT-based dynamic flow slicing
+    uint32_t DoLbFlowSlice(Ptr<const Packet> p, const CustomHeader &ch,
+                           const std::vector<int> &nexthops);
+
+    // Per-slice port mapping at each switch
+    // All packets with the same slice_id must use the same port at this switch
+    std::map<uint64_t, uint32_t> m_sliceIdToPort;  // <slice_id, out_port>
+
+    // For RTT measurement at destination ToR
+    std::map<uint64_t, uint64_t> m_flowPhase0TxTime;  // <flow_key, phase0_tx_timestamp>
+    std::map<uint64_t, Time> m_flowPhase0RxTime;     // <flow_key, phase0_rx_time>
 
    public:
     // Ptr<BroadcomNode> m_broadcom;

@@ -18,6 +18,7 @@
 #include "ns3/custom-header.h"
 #include "ns3/event-id.h"
 #include "ns3/log.h"
+#include "ns3/object.h"
 #include "ns3/packet.h"
 #include "ns3/ptr.h"
 #include "ns3/simulator.h"
@@ -114,8 +115,9 @@ struct FlowSliceSenderState {
  * - Tags packets with slice_id, sequence number, and timestamps
  * - Supports up to 4 paths (typical fat-tree)
  */
-class FlowSliceSender {
+class FlowSliceSender : public Object {
 public:
+    static TypeId GetTypeId(void);
     FlowSliceSender();
     ~FlowSliceSender();
 
@@ -157,6 +159,24 @@ public:
      * @brief Get queue size for a specific path
      */
     uint32_t GetQueueSize(uint32_t path_id);
+
+    /**
+     * @brief Static callback for receiving RTT feedback from destination ToR
+     *
+     * This allows destination ToR to send RTT difference back to source ToR
+     * without needing to know the source ToR's location.
+     */
+    static Callback<void, uint64_t, uint64_t, Time> s_rttFeedbackCallback;
+
+    /**
+     * @brief Set the global RTT feedback callback
+     */
+    static void SetRttFeedbackCallback(Callback<void, uint64_t, uint64_t, Time> callback);
+
+    /**
+     * @brief Send RTT feedback to source ToR (called by destination ToR)
+     */
+    static void SendRttFeedback(uint64_t flow_key, uint64_t rtt_diff_ns, Time phase0_rx_time);
 
 private:
     /**

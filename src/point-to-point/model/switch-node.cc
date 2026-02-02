@@ -51,6 +51,13 @@ SwitchNode::SwitchNode() {
     m_mmu->m_conweaveRouting.SetSwitchSendToDevCallback(
         MakeCallback(&SwitchNode::SendToDevContinue, this));
 
+    // Initialize FlowSlice sender and register RTT feedback callback
+    m_flowSliceSender = CreateObject<FlowSliceSender>();
+    m_flowSliceSender->SetGetQueueSizeCallback(
+        MakeCallback(&SwitchNode::CalculateInterfaceLoad, this));
+    FlowSliceSender::SetRttFeedbackCallback(
+        MakeCallback(&FlowSliceSender::ProcessRttFeedback, m_flowSliceSender));
+
     for (uint32_t i = 0; i < pCnt; i++) {
         m_txBytes[i] = 0;
     }
@@ -221,11 +228,91 @@ uint32_t SwitchNode::DoLbFlowSlice(Ptr<const Packet> p, const CustomHeader &ch,
 
     uint64_t slice_id;
     uint64_t flow_key;
+    uint64_t timestamp_tx = 0;
+    uint64_t timestamp_tail = 0;
+    uint32_t flag = 0;
 
     if (hasSliceTag) {
         // Packet already has FlowSlice tag from source ToR
         slice_id = sliceTag.GetSliceId();
         flow_key = sliceTag.GetFlowKey();
+        timestamp_tx = sliceTag.GetTimestampTx();
+        timestamp_tail = sliceTag.GetTimestampTail();
+        flag = sliceTag.GetFlag();
+
+        // RTT measurement at destination ToR
+        if (m_isToR) {
+            Time now = Simulator::Now();
+
+            // Extract slice number from slice_id
+            uint32_t slice_num = slice_id & 0xFFFF;
+
+            // Record first packet arrival time for this slice
+            if (m_flowSliceRxTime[flow_key].find(slice_num) == m_flowSliceRxTime[flow_key].end()) {
+                m_flowSliceRxTime[flow_key][slice_num] = now;
+
+                // Also record phase0 info for this slice
+                if (m_flowPathRtt[flow_key].find(slice_num) == m_flowPathRtt[flow_key].end()) {
+                    m_flowPathRtt[flow_key][slice_num].phase0_tx_time = timestamp_tx;
+                    m_flowPathRtt[flow_key][slice_num].phase0_rx_time = now;
+                    m_flowPathRtt[flow_key][slice_num].active = true;
+                }
+            }
+
+            // On TAIL packet, calculate RTT difference
+            if (flag == FlowSliceTag::TAIL && timestamp_tail > 0) {
+                // Calculate RTT for this path/slice
+                uint64_t rtt_ns = now.GetNanoSeconds() - timestamp_tx;
+
+                // Calculate timegap: time between slices at source ToR
+                uint64_t timegap_at_tx = timestamp_tx - timestamp_tail;
+
+                // Store RTT for this path/slice combination
+                // We use slice_num as a proxy for path (different slices may use different paths)
+                m_flowPathRtt[flow_key][slice_num].path_id = slice_num;
+                m_flowPathRtt[flow_key][slice_num].phase0_tx_time = timestamp_tx;
+                m_flowPathRtt[flow_key][slice_num].phase0_rx_time = now;
+
+                // Now calculate max-min RTT difference across all active paths for this flow
+                uint64_t max_rtt = 0;
+                uint64_t min_rtt = UINT64_MAX;
+                uint32_t active_paths = 0;
+
+                for (const auto& entry : m_flowPathRtt[flow_key]) {
+                    const PathRttInfo& info = entry.second;
+                    if (!info.active) continue;
+
+                    // Calculate RTT for this path
+                    uint64_t path_rtt = info.phase0_rx_time.GetNanoSeconds() - info.phase0_tx_time;
+                    active_paths++;
+
+                    if (path_rtt > max_rtt) max_rtt = path_rtt;
+                    if (path_rtt < min_rtt) min_rtt = path_rtt;
+                }
+
+                // Calculate RTT difference (max - min)
+                uint64_t rtt_diff_ns = 0;
+                if (active_paths >= 2 && max_rtt > min_rtt) {
+                    rtt_diff_ns = max_rtt - min_rtt;
+                }
+
+                NS_LOG_INFO("FlowSlice: TAIL from flow " << flow_key
+                           << " slice " << slice_num
+                           << " rtt=" << rtt_ns / 1000.0 << "μs"
+                           << " timegap_at_tx=" << timegap_at_tx / 1000.0 << "μs"
+                           << " active_paths=" << active_paths
+                           << " max_rtt=" << (max_rtt / 1000.0) << "μs"
+                           << " min_rtt=" << (min_rtt / 1000.0) << "μs"
+                           << " rtt_diff=" << (rtt_diff_ns / 1000.0) << "μs");
+
+                // Send RTT feedback back to source ToR
+                // Use phase0_rx_time as the receive time for this slice's first packet
+                if (rtt_diff_ns > 0) {
+                    Time phase0_rx_time = m_flowPathRtt[flow_key][slice_num].phase0_rx_time;
+                    FlowSliceSender::SendRttFeedback(flow_key, rtt_diff_ns, phase0_rx_time);
+                }
+            }
+        }
     } else {
         // Calculate flow hash for packets without tag (should not happen in normal flow)
         union {

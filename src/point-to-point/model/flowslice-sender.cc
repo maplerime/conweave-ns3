@@ -111,6 +111,34 @@ void FlowSliceTag::Print(std::ostream& os) const {
  * FlowSliceSender Implementation
  ***************************************************************/
 
+NS_OBJECT_ENSURE_REGISTERED(FlowSliceSender);
+
+TypeId FlowSliceSender::GetTypeId(void) {
+    static TypeId tid = TypeId("ns3::FlowSliceSender")
+                            .SetParent<Object>()
+                            .SetGroupName("Network")
+                            .AddConstructor<FlowSliceSender>();
+    return tid;
+}
+
+// Static callback for RTT feedback
+Callback<void, uint64_t, uint64_t, Time> FlowSliceSender::s_rttFeedbackCallback;
+
+void FlowSliceSender::SetRttFeedbackCallback(Callback<void, uint64_t, uint64_t, Time> callback) {
+    s_rttFeedbackCallback = callback;
+    NS_LOG_INFO("FlowSlice RTT feedback callback registered");
+}
+
+void FlowSliceSender::SendRttFeedback(uint64_t flow_key, uint64_t rtt_diff_ns, Time phase0_rx_time) {
+    if (!s_rttFeedbackCallback.IsNull()) {
+        s_rttFeedbackCallback(flow_key, rtt_diff_ns, phase0_rx_time);
+        NS_LOG_DEBUG("Sent RTT feedback for flow " << flow_key
+                     << " rtt_diff=" << (rtt_diff_ns / 1000.0) << "μs");
+    } else {
+        NS_LOG_WARN("FlowSlice RTT feedback callback not set!");
+    }
+}
+
 FlowSliceSender::FlowSliceSender()
     : m_maxPaths(4),
       m_minSliceTime(1000),    // 1μs minimum between switches

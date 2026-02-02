@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "flowslice-sender.h"
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
 
@@ -70,8 +71,24 @@ class SwitchNode : public Node {
     std::map<uint64_t, uint32_t> m_sliceIdToPort;  // <slice_id, out_port>
 
     // For RTT measurement at destination ToR
-    std::map<uint64_t, uint64_t> m_flowPhase0TxTime;  // <flow_key, phase0_tx_timestamp>
-    std::map<uint64_t, Time> m_flowPhase0RxTime;     // <flow_key, phase0_rx_time>
+    // Track per-path RTT for each flow to calculate max-min difference
+    struct PathRttInfo {
+        uint64_t phase0_tx_time;     // First packet Tx timestamp from source
+        Time phase0_rx_time;          // First packet Rx time at destination
+        uint32_t path_id;             // Path identifier
+        bool active;                  // Whether this path is active
+
+        PathRttInfo() : phase0_tx_time(0), path_id(0), active(false) {}
+    };
+
+    // Per-flow, per-path RTT tracking: <flow_key, <path_id, PathRttInfo>>
+    std::map<uint64_t, std::map<uint32_t, PathRttInfo>> m_flowPathRtt;
+
+    // Per-flow current slice tracking: <flow_key, <slice_id, first_rx_time>>
+    std::map<uint64_t, std::map<uint32_t, Time>> m_flowSliceRxTime;
+
+    /* FlowSlice Sender - for source ToR to tag packets and process RTT feedback */
+    Ptr<FlowSliceSender> m_flowSliceSender;
 
    public:
     // Ptr<BroadcomNode> m_broadcom;

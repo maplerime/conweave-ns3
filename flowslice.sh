@@ -30,7 +30,7 @@ python3 run.py --lb drill --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NE
 sleep 0.1
 python3 run.py --lb hybrid --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.85 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb flowslice --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 16 --fs_max_slice 64 --fs_safety_factor 0.8 2>&1 > /dev/null &
+python3 run.py --lb flowslice --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 8 --fs_max_slice 32 --fs_safety_factor 0.8 2>&1 > /dev/null &
 sleep 0.1
 
 # IRN RDMA
@@ -41,7 +41,7 @@ python3 run.py --lb drill --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NE
 sleep 0.1
 python3 run.py --lb hybrid --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --hybrid_threshold 0 --hybrid_ratio 0.85 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb flowslice --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 16 --fs_max_slice 64 --fs_safety_factor 0.8 2>&1 > /dev/null &
+python3 run.py --lb flowslice --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --fs_min_slice 8 --fs_max_slice 32 --fs_safety_factor 0.8 2>&1 > /dev/null &
 sleep 0.1
 
 cecho "GREEN" "Runing all in parallel. Check the processors running on background!"

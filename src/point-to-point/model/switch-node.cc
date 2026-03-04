@@ -351,10 +351,24 @@ uint32_t SwitchNode::DoLbFlowSlice(Ptr<const Packet> p, const CustomHeader &ch,
     }
 
     // No port mapping for this slice yet - select based on shortest queue
+    // When slice_id changes, avoid using the previous slice's path (if possible)
     uint32_t best_port = nexthops[0];
     uint32_t min_queue = UINT32_MAX;
 
+    // Get the previous slice's port for this flow (to avoid it)
+    uint32_t prev_port = UINT32_MAX;
+    auto prevPortIt = m_flowPrevSlicePort.find(flow_key);
+    if (prevPortIt != m_flowPrevSlicePort.end()) {
+        prev_port = prevPortIt->second;
+    }
+
+    // Select shortest queue port, excluding the previous slice's port
     for (auto port : nexthops) {
+        // Skip the previous slice's port if there are other options
+        if (nexthops.size() > 1 && port == (int)prev_port) {
+            continue;
+        }
+
         uint32_t queue_size = CalculateInterfaceLoad(port);
         if (queue_size < min_queue) {
             min_queue = queue_size;
@@ -364,6 +378,10 @@ uint32_t SwitchNode::DoLbFlowSlice(Ptr<const Packet> p, const CustomHeader &ch,
 
     // Cache the port mapping for this slice
     m_sliceIdToPort[slice_id] = best_port;
+
+    // Update flow's previous slice tracking
+    m_flowPrevSliceId[flow_key] = slice_id;
+    m_flowPrevSlicePort[flow_key] = best_port;
 
     // Also update DRILL's previous best interface for compatibility
     m_previousBestInterfaceMap[ch.dip] = best_port;

@@ -70,6 +70,11 @@ class SwitchNode : public Node {
     // All packets with the same slice_id must use the same port at this switch
     std::map<uint64_t, uint32_t> m_sliceIdToPort;  // <slice_id, out_port>
 
+    // Per-flow previous slice tracking (for avoiding same path when switching slices)
+    // Track the previous slice_id and its port for each flow
+    std::map<uint64_t, uint64_t> m_flowPrevSliceId;   // <flow_key, prev_slice_id>
+    std::map<uint64_t, uint32_t> m_flowPrevSlicePort; // <flow_key, prev_port>
+
     // For RTT measurement at destination ToR
     // Track per-path RTT for each flow to calculate max-min difference
     struct PathRttInfo {

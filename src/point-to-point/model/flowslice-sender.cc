@@ -251,28 +251,28 @@ uint32_t FlowSliceSender::SwitchPath(FlowSliceSenderState* state,
 
 uint32_t FlowSliceSender::CalculateSliceSizeFromRttDiff(uint64_t rtt_diff_ns) {
     // Dynamic slice size based on RTT difference
-    // RTT diff small → larger slices (better utilization)
-    // RTT diff large → smaller slices (less reordering)
+    // RTT diff small → smaller slices (more path switching to explore paths)
+    // RTT diff large → larger slices (stick to better paths)
 
     double rtt_diff_us = rtt_diff_ns / 1000.0;  // Convert to microseconds
 
     uint32_t slice_size;
 
     if (rtt_diff_us < 0.5) {
-        // Very small RTT diff (< 0.5μs): use max slice size
-        slice_size = m_maxSlicePackets;
-    } else if (rtt_diff_us < 1.0) {
-        // Small RTT diff (0.5-1μs): 16-32 packets
-        slice_size = 16 + static_cast<uint32_t>((1.0 - rtt_diff_us) * 16);
-    } else if (rtt_diff_us < 2.0) {
-        // Medium RTT diff (1-2μs): 8-16 packets
-        slice_size = 8 + static_cast<uint32_t>((2.0 - rtt_diff_us) * 8);
-    } else if (rtt_diff_us < 5.0) {
-        // Large RTT diff (2-5μs): 2-8 packets
-        slice_size = 2 + static_cast<uint32_t>((5.0 - rtt_diff_us) * 2);
-    } else {
-        // Very large RTT diff (> 5μs): use min slice size
+        // Very small RTT diff (< 0.5μs): use min slice size (frequent switching)
         slice_size = m_minSlicePackets;
+    } else if (rtt_diff_us < 1.0) {
+        // Small RTT diff (0.5-1μs): 2-16 packets
+        slice_size = 2 + static_cast<uint32_t>((rtt_diff_us - 0.5) * 28);
+    } else if (rtt_diff_us < 2.0) {
+        // Medium RTT diff (1-2μs): 16-24 packets
+        slice_size = 16 + static_cast<uint32_t>((rtt_diff_us - 1.0) * 8);
+    } else if (rtt_diff_us < 5.0) {
+        // Large RTT diff (2-5μs): 24-32 packets
+        slice_size = 24 + static_cast<uint32_t>((rtt_diff_us - 2.0) * 2.67);
+    } else {
+        // Very large RTT diff (> 5μs): use max slice size (stick to paths)
+        slice_size = m_maxSlicePackets;
     }
 
     // Clamp to bounds

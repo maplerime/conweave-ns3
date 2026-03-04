@@ -1,0 +1,19 @@
+# AI Training Workload CDF
+# Based on distributed deep learning traffic characteristics from:
+# - "On the Burstiness of Distributed Machine Learning Traffic" (arXiv:2401.00329)
+# - "Understanding Communication Characteristics of AI Training Workloads"
+# - Meta's RoCE networks for distributed AI training at scale
+# Format: size_bytes cumulative_probability
+# Characteristics: Few but large flows, gradient synchronization patterns
+
+100000    0.05   # 100KB - small control messages
+500000    0.15   # 500KB - metadata and config
+1000000   0.30   # 1MB - small gradient updates
+2000000   0.45   # 2MB - medium gradients
+5000000   0.60   # 5MB - large gradient batches
+10000000  0.75   # 10MB - parameter sync
+25000000  0.85   # 25MB - model checkpoint chunks
+50000000  0.92   # 50MB - large model transfers
+100000000 0.97  # 100MB - very large transfers
+500000000 0.99  # 500MB - extreme large flows
+1000000000 1.00  # 1GB - maximum flow size

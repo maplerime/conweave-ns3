@@ -51,6 +51,9 @@ TypeId RdmaHw::GetTypeId(void) {
             .AddAttribute("L2BackToZero", "Layer 2 go back to zero transmission.",
                           BooleanValue(false), MakeBooleanAccessor(&RdmaHw::m_backto0),
                           MakeBooleanChecker())
+            .AddAttribute("L2OooTolerance", "Out-of-order tolerance window at receiver (bytes). 0 means no tolerance.",
+                          UintegerValue(65536), MakeUintegerAccessor(&RdmaHw::m_ooo_tolerance),
+                          MakeUintegerChecker<uint32_t>())
             .AddAttribute("EwmaGain",
                           "Control gain parameter which determines the level of rate decrease",
                           DoubleValue(1.0 / 16), MakeDoubleAccessor(&RdmaHw::m_g),
@@ -494,17 +497,19 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 
             qp->irn.m_sack.discardUpTo(qp->snd_una);
 
-            if (qp->snd_nxt < qp->snd_una) {
-                qp->snd_nxt = qp->snd_una;
-            }
+            // Disable immediate retransmit on ACK - only timeout triggers Go-Back-N
+            // if (qp->snd_nxt < qp->snd_una) {
+            //     qp->snd_nxt = qp->snd_una;
+            // }
             // if (qp->irn.m_sack.IsEmpty())  { //
             if (qp->irn.m_recovery && qp->snd_una >= qp->irn.m_recovery_seq) {
                 qp->irn.m_recovery = false;
             }
         } else {
-            if (qp->snd_nxt < qp->snd_una) {
-                qp->snd_nxt = qp->snd_una;
-            }
+            // Disable immediate retransmit on ACK - only timeout triggers Go-Back-N
+            // if (qp->snd_nxt < qp->snd_una) {
+            //     qp->snd_nxt = qp->snd_una;
+            // }
         }
         if (qp->IsFinished()) {
             QpComplete(qp);
@@ -540,8 +545,10 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
             }
         }
 
-    } else if (ch.l3Prot == 0xFD)  // NACK
-        RecoverQueue(qp);
+    } else if (ch.l3Prot == 0xFD) {  // NACK
+        // Disable immediate retransmit on NACK - only timeout triggers Go-Back-N
+        // RecoverQueue(qp);
+    }
 
     // handle cnp
     if (cnp) {
@@ -633,7 +640,17 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             return 5;
         }
     } else if (seq > expected) {
-        // Generate NACK
+        // Out-of-order packet received
+        // Check if within tolerance window - if so, accept it (simulate direct write to app memory)
+        if (!m_irn && m_ooo_tolerance > 0 && (seq - expected) <= m_ooo_tolerance) {
+            // Within tolerance window: accept the packet as if it's in-order
+            // Simulate direct write to application memory, freeing NIC buffer
+            // Don't update ReceiverNextExpectedSeq yet (wait for missing packets)
+            // Just acknowledge receipt without NACK
+            return 5;  // Silent accept, no ACK/NACK needed
+        }
+
+        // Generate NACK for out-of-tolerance packets or when IRN is enabled
         if (m_irn) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
 

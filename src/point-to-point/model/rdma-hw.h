@@ -34,6 +34,7 @@ class RdmaHw : public Object {
     double m_nack_interval;
     uint32_t m_chunk;
     uint32_t m_ack_interval;
+    uint32_t m_ooo_tolerance;  // Out-of-order tolerance window (in bytes)
     bool m_backto0;
     bool m_var_win, m_fast_react;
     bool m_rateBound;

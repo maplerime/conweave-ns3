@@ -43,7 +43,11 @@ void FlowSliceReorderBuffer::Reset() {
     m_deliveryNext = 0;
     m_overflowMode = false;
 
-    // Keep statistics
+    // Reset statistics
+    m_totalPacketsProcessed = 0;
+    m_totalPacketsBuffered = 0;
+    m_totalPacketsDelivered = 0;
+    m_overflowTriggers = 0;
 }
 
 SubflowQueue* FlowSliceReorderBuffer::GetOrCreateSubflowQueue(uint32_t subflow_id, uint32_t seq_num) {
@@ -88,29 +92,26 @@ bool FlowSliceReorderBuffer::ProcessPacket(
 
     NS_LOG_DEBUG("Processing packet: subflow=" << subflow_id
                  << ", seq=" << seq_num
-                 << ", delivery_next=" << m_deliveryNext
-                 << ", overflow_mode=" << m_overflowMode);
-
-    // Check if in overflow mode
-    if (m_overflowMode) {
-        // Deliver immediately without buffering
-        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-        p->PeekHeader(ch);
-        deliver_callback(p, ch);
-        m_totalPacketsDelivered++;
-        return false;
-    }
+                 << ", delivery_next=" << m_deliveryNext);
 
     // Get or create subflow queue
     SubflowQueue* queue = GetOrCreateSubflowQueue(subflow_id, seq_num);
 
-    // Check if we need to enter overflow mode
-    // Condition: queue is full or cannot create new queue
+    // Check if we need to flush this queue (queue is full or cannot create new queue)
     if (queue == nullptr || queue->IsFull()) {
-        NS_LOG_WARN("Entering overflow mode: queue=" << (queue ? queue->subflow_id : -1)
+        NS_LOG_WARN("Queue issue: queue=" << (queue ? queue->subflow_id : -1)
                     << " full=" << (queue ? queue->IsFull() : false)
                     << ", n_queues=" << m_subflowQueues.size());
-        EnterOverflowMode(deliver_callback);
+
+        // If queue exists, flush only this queue (but allow future packets to be buffered)
+        if (queue != nullptr) {
+            NS_LOG_WARN("Flushing queue " << queue->subflow_id << " (full), will rebuffer future packets");
+            FlushQueueButAllowRebuffer(queue->subflow_id, deliver_callback);
+        } else {
+            // Cannot create new queue (max queues reached), deliver immediately without buffering
+            NS_LOG_WARN("Max queues reached, delivering packet immediately");
+        }
+
         // Deliver this packet immediately
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
         p->PeekHeader(ch);
@@ -136,7 +137,7 @@ bool FlowSliceReorderBuffer::ProcessPacket(
     // Check if this is the next expected packet globally
     if (seq_num == m_deliveryNext) {
         NS_LOG_DEBUG("Packet seq=" << seq_num << " matches delivery_next, delivering immediately");
-        // Deliver immediately
+        // Deliver immediately without buffering
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
         p->PeekHeader(ch);
         deliver_callback(p, ch);
@@ -152,35 +153,16 @@ bool FlowSliceReorderBuffer::ProcessPacket(
         return false;  // Not buffered
     }
 
-    // Check if this packet belongs to this subflow's expected sequence
-    if (seq_num == queue->next_expected_seq) {
-        NS_LOG_DEBUG("Packet seq=" << seq_num << " matches subflow " << subflow_id
-                     << " expected, but there's a gap from other subflows");
+    // Packet is out of order - check if we should buffer it
+    // Only buffer if seq_num > m_deliveryNext (future packet)
+    if (seq_num > m_deliveryNext) {
+        NS_LOG_DEBUG("Out-of-order packet seq=" << seq_num << " > delivery_next=" << m_deliveryNext << ", buffering");
 
-        // Buffer this packet (in-order for this subflow, but out-of-order globally)
+        // Buffer this packet
         queue->buffer.push({seq_num, p});
         queue->size++;
         m_totalPacketsBuffered++;
         queue->next_expected_seq = seq_num + 1;
-
-        NS_LOG_INFO("Buffered in-order packet for subflow " << subflow_id
-                    << ", seq=" << seq_num
-                    << ", queue_size=" << queue->size);
-
-        // Check if we can now deliver packets
-        TryDeliverBuffered(deliver_callback);
-
-        return true;  // Buffered
-    }
-
-    // Out-of-order packet for this subflow - check if queue has space
-    if (queue->size < queue->max_size) {
-        NS_LOG_DEBUG("Buffering out-of-order packet seq=" << seq_num
-                     << " for subflow " << subflow_id);
-
-        queue->buffer.push({seq_num, p});
-        queue->size++;
-        m_totalPacketsBuffered++;
 
         NS_LOG_INFO("Buffered OoO packet for subflow " << subflow_id
                     << ", seq=" << seq_num
@@ -190,12 +172,8 @@ bool FlowSliceReorderBuffer::ProcessPacket(
         return true;  // Buffered
     }
 
-    // Queue is full - enter overflow mode
-    NS_LOG_WARN("Subflow " << subflow_id << " queue full (size=" << queue->size
-                 << "), entering overflow mode");
-    EnterOverflowMode(deliver_callback);
-
-    // Deliver this packet
+    // seq_num < m_deliveryNext: late packet, deliver immediately
+    NS_LOG_DEBUG("Late packet seq=" << seq_num << " < delivery_next=" << m_deliveryNext << ", delivering immediately");
     CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
     p->PeekHeader(ch);
     deliver_callback(p, ch);
@@ -272,10 +250,79 @@ void FlowSliceReorderBuffer::EnterOverflowMode(
             deliver_callback(pkt, ch);
             m_totalPacketsDelivered++;
         }
+        queue->overflow = true;  // Mark all queues as overflow
     }
 
     NS_LOG_INFO("Overflow mode: delivered all buffered packets, total_delivered="
                 << m_totalPacketsDelivered);
+}
+
+void FlowSliceReorderBuffer::FlushQueue(
+    uint32_t queue_id,
+    Callback<void, Ptr<Packet>, CustomHeader&> deliver_callback) {
+
+    auto it = m_subflowQueues.find(queue_id);
+    if (it == m_subflowQueues.end()) {
+        NS_LOG_WARN("FlushQueue: queue " << queue_id << " not found");
+        return;
+    }
+
+    SubflowQueue* queue = it->second;
+
+    NS_LOG_WARN("Flushing queue " << queue_id << " (subflow " << queue->subflow_id
+                << ") with " << queue->size << " packets");
+
+    // Mark this queue as overflow mode (future packets for this subflow bypass buffering)
+    queue->overflow = true;
+
+    // Deliver all buffered packets from this queue only
+    while (!queue->buffer.empty()) {
+        Ptr<Packet> pkt = queue->buffer.front().second;
+        queue->buffer.pop();
+        queue->size--;
+
+        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+        pkt->PeekHeader(ch);
+        deliver_callback(pkt, ch);
+        m_totalPacketsDelivered++;
+    }
+
+    NS_LOG_INFO("Flushed queue " << queue_id << " (subflow " << queue->subflow_id
+                << "), total_delivered=" << m_totalPacketsDelivered);
+}
+
+void FlowSliceReorderBuffer::FlushQueueButAllowRebuffer(
+    uint32_t queue_id,
+    Callback<void, Ptr<Packet>, CustomHeader&> deliver_callback) {
+
+    auto it = m_subflowQueues.find(queue_id);
+    if (it == m_subflowQueues.end()) {
+        NS_LOG_WARN("FlushQueueButAllowRebuffer: queue " << queue_id << " not found");
+        return;
+    }
+
+    SubflowQueue* queue = it->second;
+
+    NS_LOG_WARN("Flushing queue " << queue_id << " (subflow " << queue->subflow_id
+                << ") with " << queue->size << " packets, allowing rebuffer");
+
+    // Do NOT set overflow mode - future packets can be buffered again
+    // queue->overflow = true;  <-- REMOVED
+
+    // Deliver all buffered packets from this queue only
+    while (!queue->buffer.empty()) {
+        Ptr<Packet> pkt = queue->buffer.front().second;
+        queue->buffer.pop();
+        queue->size--;
+
+        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+        pkt->PeekHeader(ch);
+        deliver_callback(pkt, ch);
+        m_totalPacketsDelivered++;
+    }
+
+    NS_LOG_INFO("Flushed queue " << queue_id << " (subflow " << queue->subflow_id
+                << "), future packets will be rebuffered");
 }
 
 uint32_t FlowSliceReorderBuffer::GetTotalBufferedPackets() const {

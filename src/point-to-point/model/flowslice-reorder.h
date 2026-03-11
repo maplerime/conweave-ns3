@@ -37,9 +37,10 @@ struct SubflowQueue {
     uint64_t last_arrival_time;    // Last packet arrival time (for RTT estimation)
     uint32_t first_seq;            // First sequence number seen in this subflow
     bool active;                   // Whether this subflow is active
+    bool overflow;                 // Whether this queue is in overflow mode (bypass buffering)
 
     SubflowQueue() : subflow_id(0), next_expected_seq(0), size(0),
-                     max_size(32), last_arrival_time(0), first_seq(0), active(false) {}
+                     max_size(32), last_arrival_time(0), first_seq(0), active(false), overflow(false) {}
 
     void Clear() {
         while (!buffer.empty()) {
@@ -47,6 +48,7 @@ struct SubflowQueue {
         }
         size = 0;
         next_expected_seq = first_seq;
+        overflow = false;  // Reset overflow mode
     }
 
     bool IsFull() const {
@@ -112,11 +114,26 @@ private:
     SubflowQueue* GetOrCreateSubflowQueue(uint32_t subflow_id, uint32_t seq_num);
 
     /**
-     * @brief Enter overflow mode - deliver all buffered packets
+     * @brief Enter overflow mode - deliver all buffered packets from all queues
+     * @deprecated Use FlushQueue instead for per-queue flush
      */
     void EnterOverflowMode(Callback<void, Ptr<Packet>, CustomHeader&> deliver_callback);
 
-    static const uint32_t MAX_QUEUES = 2;
+    /**
+     * @brief Flush only the specified queue (deliver all buffered packets from this queue)
+     * @param queue_id The subflow queue to flush
+     * @param deliver_callback Callback to deliver packet to destination
+     */
+    void FlushQueue(uint32_t queue_id, Callback<void, Ptr<Packet>, CustomHeader&> deliver_callback);
+
+    /**
+     * @brief Flush the specified queue but allow future packets to be buffered again
+     * @param queue_id The subflow queue to flush
+     * @param deliver_callback Callback to deliver packet to destination
+     */
+    void FlushQueueButAllowRebuffer(uint32_t queue_id, Callback<void, Ptr<Packet>, CustomHeader&> deliver_callback);
+
+    static const uint32_t MAX_QUEUES = 2;     // Max 2 subflows
     static const uint32_t MAX_QUEUE_SIZE = 32;
 
     // Subflow queues (max 2)

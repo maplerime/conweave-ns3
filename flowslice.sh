@@ -13,7 +13,7 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
 cecho "GREEN" "Running RDMA Network Load Balancing Simulations (leaf-spine topology)"
 
 TOPOLOGY="fat_k8_320_100G_OS2" # or, fat_k8_100G_OS2
-NETLOAD="40" # network load 50%
+NETLOAD="80" # network load 50%
 RUNTIME="0.01" # 0.1 second (traffic generation)
 FLOW_FILE=config/L_40.00_CDF_AliStorage2019_N_320_T_10ms_B_100_flow.txt
 

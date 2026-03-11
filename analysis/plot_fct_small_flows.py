@@ -121,9 +121,76 @@ def size2str(steps):
     return result
 
 
-def get_steps_from_raw(filename, time_start, time_end, step=5):
+# Fixed flow size ranges (uniform bins)
+SIZE_BINS = [
+    (0, 100000),        # 0-100K
+    (100000, 500000),   # 100K-500K
+    (500000, 1000000),  # 500K-1M
+    (1000000, 5000000), # 1M-5M
+    (5000000, 10000000),# 5M-10M
+    (10000000, 20000000), # 10M-20M
+    (20000000, 30000000), # 20M-30M
+    (30000000, 40500000), # 30M-40.5M
+]
+
+SIZE_BINS_LABELS = [
+    "0-100K",
+    "100K-500K",
+    "500K-1M",
+    "1M-5M",
+    "5M-10M",
+    "10M-20M",
+    "20M-30M",
+    "30M-40M",
+]
+
+def get_steps_by_size_bins(filename, time_start, time_end):
+    """Group flows by fixed size bins instead of percentiles"""
+    cmd_slowdown = "cat %s"%(filename)+" | awk '{ if ($6>"+"%d"%time_start+" && $6+$7<"+"%d"%(time_end)+") { slow=$7/$8; print slow<1?1:slow, $5} }' | sort -n -k 2"
+    output_slowdown = subprocess.check_output(cmd_slowdown, shell=True)
+    aa = output_slowdown.decode("utf-8").split('\n')[:-2]
+
+    # Parse data
+    flows = []
+    for line in aa:
+        if line.strip():
+            parts = line.split()
+            if len(parts) >= 2:
+                slow = float(parts[0])
+                size = int(parts[1])
+                flows.append((slow, size))
+
+    # Group by size bins
+    result = {"avg": [], "p99": [], "size": [], "label": []}
+
+    for min_size, max_size in SIZE_BINS:
+        bin_flows = [f for f in flows if min_size <= f[1] < max_size]
+        if bin_flows:
+            slowdowns = [f[0] for f in bin_flows]
+            result["avg"].append(sum(slowdowns) / len(slowdowns))
+            result["p99"].append(get_pctl(sorted(slowdowns), 0.99))
+            result["size"].append((min_size + max_size) / 2)  # midpoint for x
+            # Create label
+            if max_size < 1000000:
+                result["label"].append("{}K-{}K".format(min_size//1000, max_size//1000))
+            else:
+                result["label"].append("{}M-{}M".format(min_size//1000000, max_size//1000000))
+        else:
+            result["avg"].append(float('nan'))
+            result["p99"].append(float('nan'))
+            result["size"].append((min_size + max_size) / 2)
+            if max_size < 1000000:
+                result["label"].append("{}K-{}K".format(min_size//1000, max_size//1000))
+            else:
+                result["label"].append("{}M-{}M".format(min_size//1000000, max_size//1000000))
+
+    return result
+
+
+def get_steps_from_raw(filename, time_start, time_end, step=5, max_size=1000000000):
+    # No filtering - use log scale to show all flows
     # time_start = int(2.005 * 1000000000)
-    # time_end = int(3.0 * 1000000000) 
+    # time_end = int(3.0 * 1000000000)
     cmd_slowdown = "cat %s"%(filename)+" | awk '{ if ($6>"+"%d"%time_start+" && $6+$7<"+"%d"%(time_end)+") { slow=$7/$8; print slow<1?1:slow, $5} }' | sort -n -k 2"    
     output_slowdown = subprocess.check_output(cmd_slowdown, shell=True)
     aa = output_slowdown.decode("utf-8").split('\n')[:-2]
@@ -212,14 +279,14 @@ def main():
         fig.tight_layout()
 
         ax.set_xlabel("Flow Size (Bytes)", fontsize=11.5)
-        ax.set_ylabel("Avg FCT Slowdown", fontsize=11.5)
+        ax.set_ylabel("Avg FCT Slowdown (log scale)", fontsize=11.5)
 
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
-        
-        xvals = [i for i in range(STEP, 100 + STEP, STEP)]
+
+        xvals = list(range(len(SIZE_BINS)))  # 0, 1, 2, ... for each bin
 
         lbmode_order = ["fecmp", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
@@ -228,10 +295,10 @@ def main():
                 lb_mode = vv[1]
 
                 if lb_mode == tgt_lbmode:
-                    # plotting
+                    # plotting with size bins
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
-                    result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
+                    result = get_steps_by_size_bins(fct_slowdown, int(time_start), int(time_end))
+
                     ax.plot(xvals,
                         result["avg"],
                         markersize=1.0,
@@ -243,15 +310,15 @@ def main():
                 labelspacing=0.4, columnspacing=0.8)
 
         ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
-        ax.set_ylim(bottom=0, top=600)  # Range to show AI training large flow slowdown (most ~526)
-        # ax.set_yscale("log")
+        ax.set_xticks(xvals)
+        ax.set_xticklabels(SIZE_BINS_LABELS, fontsize=10.5)
+        ax.set_ylim(bottom=1.0, top=1000)
+        ax.set_yscale("log")
 
         fig.tight_layout()
         ax.grid(which='minor', alpha=0.2)
         ax.grid(which='major', alpha=0.5)
-        fig_filename = fig_dir + "/{}.pdf".format("AVG_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
+        fig_filename = fig_dir + "/{}.pdf".format("AVG_SMALLFLOWS_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
         print(fig_filename)
         plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
         plt.close()
@@ -265,14 +332,14 @@ def main():
         fig.tight_layout()
 
         ax.set_xlabel("Flow Size (Bytes)", fontsize=11.5)
-        ax.set_ylabel("p99 FCT Slowdown", fontsize=11.5)
+        ax.set_ylabel("p99 FCT Slowdown (log scale)", fontsize=11.5)
 
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
-        
-        xvals = [i for i in range(STEP, 100 + STEP, STEP)]
+
+        xvals = list(range(len(SIZE_BINS)))  # 0, 1, 2, ... for each bin
 
         lbmode_order = ["fecmp", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
@@ -281,10 +348,10 @@ def main():
                 lb_mode = vv[1]
 
                 if lb_mode == tgt_lbmode:
-                    # plotting
+                    # plotting with size bins
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
-                    result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
+                    result = get_steps_by_size_bins(fct_slowdown, int(time_start), int(time_end))
+
                     ax.plot(xvals,
                         result["p99"],
                         markersize=1.0,
@@ -296,15 +363,15 @@ def main():
                 labelspacing=0.4, columnspacing=0.8)
 
         ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
-        ax.set_ylim(bottom=0, top=600)  # Range to show AI training large flow slowdown (most ~526)
-        # ax.set_yscale("log")
+        ax.set_xticks(xvals)
+        ax.set_xticklabels(SIZE_BINS_LABELS, fontsize=10.5)
+        ax.set_ylim(bottom=1.0, top=1000)
+        ax.set_yscale("log")
 
         fig.tight_layout()
         ax.grid(which='minor', alpha=0.2)
         ax.grid(which='major', alpha=0.5)
-        fig_filename = fig_dir + "/{}.pdf".format("P99_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
+        fig_filename = fig_dir + "/{}.pdf".format("P99_SMALLFLOWS_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
         print(fig_filename)
         plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
         plt.close()

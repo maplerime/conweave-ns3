@@ -497,7 +497,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 
             qp->irn.m_sack.discardUpTo(qp->snd_una);
 
-            // Disable immediate retransmit on ACK - only timeout triggers Go-Back-N
+            // Ignore ACK/NACK - only timeout triggers Go-Back-N retransmission
             // if (qp->snd_nxt < qp->snd_una) {
             //     qp->snd_nxt = qp->snd_una;
             // }
@@ -506,7 +506,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
                 qp->irn.m_recovery = false;
             }
         } else {
-            // Disable immediate retransmit on ACK - only timeout triggers Go-Back-N
+            // Ignore ACK/NACK - only timeout triggers Go-Back-N retransmission
             // if (qp->snd_nxt < qp->snd_una) {
             //     qp->snd_nxt = qp->snd_una;
             // }
@@ -546,7 +546,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
         }
 
     } else if (ch.l3Prot == 0xFD) {  // NACK
-        // Disable immediate retransmit on NACK - only timeout triggers Go-Back-N
+        // Ignore NACK - only timeout triggers Go-Back-N retransmission
         // RecoverQueue(qp);
     }
 
@@ -633,8 +633,10 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) {
             q->m_milestone_rx +=
                 m_ack_interval;  // if ack_interval is small (e.g., 1), condition is meaningless
+            q->m_lastAckSeq = q->ReceiverNextExpectedSeq;
             return 1;            // Generate ACK
         } else if (q->ReceiverNextExpectedSeq % m_chunk == 0) {
+            q->m_lastAckSeq = q->ReceiverNextExpectedSeq;
             return 1;
         } else {
             return 5;
@@ -643,11 +645,16 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         // Out-of-order packet received
         // Check if within tolerance window - if so, accept it (simulate direct write to app memory)
         if (!m_irn && m_ooo_tolerance > 0 && (seq - expected) <= m_ooo_tolerance) {
-            // Within tolerance window: accept the packet as if it's in-order
+            // Within tolerance window: accept the packet
             // Simulate direct write to application memory, freeing NIC buffer
-            // Don't update ReceiverNextExpectedSeq yet (wait for missing packets)
-            // Just acknowledge receipt without NACK
-            return 5;  // Silent accept, no ACK/NACK needed
+            // Don't update ReceiverNextExpectedSeq - still wait for missing packets
+            // Only send ACK if ReceiverNextExpectedSeq has changed (new in-order packets arrived)
+            if (q->ReceiverNextExpectedSeq == q->m_lastAckSeq) {
+                return 5;  // Same as last ACK, don't send again
+            } else {
+                q->m_lastAckSeq = q->ReceiverNextExpectedSeq;
+                return 1;  // Send ACK with updated cumulative ACK
+            }
         }
 
         // Generate NACK for out-of-tolerance packets or when IRN is enabled

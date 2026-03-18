@@ -52,7 +52,7 @@ TypeId RdmaHw::GetTypeId(void) {
                           BooleanValue(false), MakeBooleanAccessor(&RdmaHw::m_backto0),
                           MakeBooleanChecker())
             .AddAttribute("L2OooTolerance", "Out-of-order tolerance window at receiver (bytes). 0 means no tolerance.",
-                          UintegerValue(65536), MakeUintegerAccessor(&RdmaHw::m_ooo_tolerance),
+                          UintegerValue(6553600), MakeUintegerAccessor(&RdmaHw::m_ooo_tolerance),
                           MakeUintegerChecker<uint32_t>())
             .AddAttribute("EwmaGain",
                           "Control gain parameter which determines the level of rate decrease",
@@ -195,6 +195,18 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     qp->SetFlowId(flow_id);
     qp->SetTimeout(m_waitAckTimeout);
 
+    // Hybrid mode: randomly assign fecmp (0) or drill (2) based on hybrid_ratio
+    if (Settings::lb_mode == 10) {  // Hybrid mode
+        uint32_t rand_val = rand() % 100;
+        if (rand_val < Settings::hybrid_ratio) {
+            qp->m_lb_mode = 2;  // drill
+        } else {
+            qp->m_lb_mode = 0;  // fecmp
+        }
+    } else {
+        qp->m_lb_mode = Settings::lb_mode;
+    }
+
     if (m_irn) {
         qp->irn.m_enabled = m_irn;
         qp->irn.m_bdp = m_irn_bdp;
@@ -212,6 +224,8 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
     qp->m_rate = m_bps;
     qp->m_max_rate = m_bps;
+    // For cc_mode == 0 (No CC), rate stays at line rate - no congestion control
+    // Relies on PFC to prevent packet loss
     if (m_cc_mode == 1) {
         qp->mlx.m_targetRate = m_bps;
     } else if (m_cc_mode == 3) {
@@ -555,9 +569,14 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
         if (m_cc_mode == 1) {  // mlx version
             cnp_received_mlx(qp);
         }
+        // cc_mode == 0: No CC mode - ignore CNP, rely on PFC only
     }
 
-    if (m_cc_mode == 3) {
+    // Handle ACK based on CC mode
+    if (m_cc_mode == 0) {
+        // No CC mode - just process ACK for window advancement, no rate adjustment
+        NS_LOG_DEBUG("CC_MODE=0: Processing ACK without congestion control");
+    } else if (m_cc_mode == 3) {
         HandleAckHp(qp, p, ch);
     } else if (m_cc_mode == 7) {
         HandleAckTimely(qp, p, ch);
@@ -671,7 +690,11 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                       0);  // SACK blocks must be larger than expected
             cnp = true;    // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
             return 2;      // generate SACK
-        }
+	} else {
+		q->ReceiverNextExpectedSeq = seq + size;
+		q->m_lastAckSeq = q->ReceiverNextExpectedSeq;
+		return 1;  // Send ACK
+	}
         if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) {  // new NACK
             q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
             q->m_lastNACK = expected;

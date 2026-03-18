@@ -54,8 +54,9 @@ using namespace std;
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 /*------Load balancing parameters-----*/
-// mode for load balancer, 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave
+// mode for load balancer, 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid
 uint32_t lb_mode = 0;
+uint32_t hybrid_ratio = 50;  // ratio (0-100) of flows using DRILL in hybrid mode
 
 // Conga params (based on paper recommendation)
 Time conga_flowletTimeout = MicroSeconds(100);  // 100us
@@ -487,10 +488,10 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
             standalone_fct);
 
     // for debugging
-    NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
-                 (Settings::ip_to_node_id(q->sip), Settings::ip_to_node_id(q->dip), q->sport,
-                  q->dport, q->m_size, q->startTime.GetTimeStep(),
-                  (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct));
+    // NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
+    //              (Settings::ip_to_node_id(q->sip), Settings::ip_to_node_id(q->dip), q->sport,
+    //              q->dport, q->m_size, q->startTime.GetTimeStep(),
+    //              (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct);
     Settings::cnt_finished_flows++;
     fflush(fout);
 }
@@ -760,7 +761,14 @@ int main(int argc, char *argv[]) {
                 uint32_t v;
                 conf >> v;
                 lb_mode = v;
+                Settings::lb_mode = lb_mode;
                 std::cerr << "LB_MODE\t\t\t" << lb_mode << "\n";
+            } else if (key.compare("HYBRID_RATIO") == 0) {
+                uint32_t v;
+                conf >> v;
+                hybrid_ratio = v;
+                Settings::hybrid_ratio = hybrid_ratio;
+                std::cerr << "HYBRID_RATIO\t\t\t" << hybrid_ratio << "\n";
             } else if (key.compare("SW_MONITORING_INTERVAL") == 0) {
                 uint32_t v;
                 conf >> v;

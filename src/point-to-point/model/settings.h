@@ -118,8 +118,9 @@ class Settings {
     static const uint32_t CONWEAVE_CTRL_DUMMY_INDEV = 88888888;  // just arbitrary
 
     /* load balancer */
-    // 0: flow ECMP, 2: DRILL, 3: Conga, 4: ConWeave
+    // 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid
     static uint32_t lb_mode;
+    static uint32_t hybrid_ratio;  // ratio (0-100) of flows using DRILL in hybrid mode
 
     // for common setting
     static uint32_t packet_payload;

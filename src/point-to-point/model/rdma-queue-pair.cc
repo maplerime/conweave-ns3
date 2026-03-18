@@ -74,6 +74,7 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     irn.m_recovery = false;
 
     m_timeout = MilliSeconds(4);
+    m_lb_mode = 0;  // Default to fecmp
 }
 
 void RdmaQueuePair::SetSize(uint64_t size) { m_size = size; }

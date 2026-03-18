@@ -263,6 +263,17 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         return DoLbFlowECMP(p, ch, nexthops);     // ECMP routing path decision (4-tuple)
     }
 
+    // Hybrid mode: decide per-flow based on flow hash
+    if (Settings::lb_mode == 10 && !control_pkt) {
+        // Use flow hash to consistently choose fecmp or drill for each flow
+        uint32_t flow_hash = ch.sip ^ ch.dip ^ ch.udp.sport ^ ch.udp.dport ^ ch.udp.pg;
+        if ((flow_hash % 100) < Settings::hybrid_ratio) {
+            return DoLbDrill(p, ch, nexthops);  // use DRILL
+        } else {
+            return DoLbFlowECMP(p, ch, nexthops);  // use FECMP
+        }
+    }
+
     switch (Settings::lb_mode) {
         case 2:
             return DoLbDrill(p, ch, nexthops);

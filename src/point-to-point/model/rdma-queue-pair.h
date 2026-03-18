@@ -68,6 +68,7 @@ class RdmaQueuePair : public Object {
     uint32_t wp;          // current window of packets
     uint32_t lastPktSize;
     int32_t m_flow_id;
+    uint32_t m_lb_mode;    // Load balance mode for this flow: 0=fecmp, 2=drill (used in hybrid mode)
     Time m_timeout;
 
     /******************************

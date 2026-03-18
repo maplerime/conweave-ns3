@@ -14,6 +14,7 @@ from cycler import cycler
 
 # LB/CC mode matching
 cc_modes = {
+    0: "none",
     1: "dcqcn",
     3: "hp",
     7: "timely",
@@ -25,6 +26,7 @@ lb_modes = {
     3: "conga",
     6: "letflow",
     9: "conweave",
+    10: "hybrid",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
@@ -136,10 +138,15 @@ def get_steps_from_raw(filename, time_start, time_end, step=5):
         r = int((i+step) * nn / 100)
         fct_size = aa[l:r]
         fct_size = [[float(x.split(" ")[0]), int(x.split(" ")[1])] for x in fct_size]
+
+        if len(fct_size) == 0:
+            # No data in this percentile range, skip
+            continue
+
         fct = sorted(map(lambda x: x[0], fct_size))
-        
+
         res[int(i/step)].append(fct_size[-1][1]) # flow size
-        
+
         res[int(i/step)].append(sum(fct) / len(fct)) # avg fct
         res[int(i/step)].append(get_pctl(fct, 0.5)) # mid fct
         res[int(i/step)].append(get_pctl(fct, 0.95)) # 95-pct fct
@@ -156,6 +163,9 @@ def get_steps_from_raw(filename, time_start, time_end, step=5):
 
     result = {"avg": [], "p99": [], "size": []}
     for item in res:
+        # Skip items without data (only have CDF value)
+        if len(item) < 6:
+            continue
         result["avg"].append(item[2])
         result["p99"].append(item[5])
         result["size"].append(item[1])
@@ -183,6 +193,9 @@ def main():
     # test_n = 10
     with open(history_filename, "r") as f:
         for line in f.readlines():
+            # Skip lines that don't start with a date pattern (MM/DD/YY)
+            if not line.strip() or not line[0].isdigit():
+                continue
             for topo in topo2bdp.keys():
                 if topo in line:
                     parsed_line = line.replace("\n", "").split(',')
@@ -221,7 +234,8 @@ def main():
         
         xvals = [i for i in range(STEP, 100 + STEP, STEP)]
 
-        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave", "hybrid"]
+        plotted_any = False  # Track if any data was plotted
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
@@ -231,29 +245,54 @@ def main():
                     # plotting
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
                     result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
-                    ax.plot(xvals,
+
+                    # Read HYBRID_RATIO from config.txt for hybrid mode
+                    if lb_mode == "hybrid":
+                        config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                        hybrid_ratio = 50  # default
+                        try:
+                            with open(config_file, 'r') as cf:
+                                for line in cf:
+                                    if line.startswith('HYBRID_RATIO'):
+                                        hybrid_ratio = int(line.split()[1])
+                                        break
+                        except:
+                            pass
+                        label = "hybrid-{}%".format(hybrid_ratio)
+                    else:
+                        label = lb_mode
+
+                    # Skip plotting if no data
+                    if len(result["avg"]) == 0:
+                        continue
+
+                    # Use actual data length for x-axis
+                    actual_xvals = xvals[:len(result["avg"])]
+                    ax.plot(actual_xvals,
                         result["avg"],
                         markersize=1.0,
                         linewidth=3.0,
-                        label="{}".format(lb_mode))
-                
-        ax.legend(bbox_to_anchor=(0.0, 1.2), loc="upper left", borderaxespad=0,
-                frameon=False, fontsize=12, facecolor='white', ncol=2,
-                labelspacing=0.4, columnspacing=0.8)
-        
-        ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
-        ax.set_ylim(bottom=1)
-        # ax.set_yscale("log")
+                        label=label)
+                    plotted_any = True
 
-        fig.tight_layout()
-        ax.grid(which='minor', alpha=0.2)
-        ax.grid(which='major', alpha=0.5)
-        fig_filename = fig_dir + "/{}.pdf".format("AVG_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
-        print(fig_filename)
-        plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
+        # Only save figure if there was data plotted
+        if plotted_any:
+            ax.legend(bbox_to_anchor=(0.0, 1.25), loc="upper left", borderaxespad=0,
+                    frameon=False, fontsize=10, facecolor='white', ncol=3,
+                    labelspacing=0.3, columnspacing=0.6)
+
+            ax.tick_params(axis="x", rotation=40)
+            ax.set_xticks(([0] + xvals)[::2])
+            ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
+            ax.set_ylim(bottom=1)
+            # ax.set_yscale("log")
+
+            fig.tight_layout()
+            ax.grid(which='minor', alpha=0.2)
+            ax.grid(which='major', alpha=0.5)
+            fig_filename = fig_dir + "/{}.pdf".format("AVG_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
+            print(fig_filename)
+            plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
         plt.close()
             
 
@@ -274,7 +313,8 @@ def main():
         
         xvals = [i for i in range(STEP, 100 + STEP, STEP)]
 
-        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave", "hybrid"]
+        plotted_any = False  # Track if any data was plotted
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
@@ -284,29 +324,54 @@ def main():
                     # plotting
                     fct_slowdown = output_dir + "/{id}/{id}_out_fct.txt".format(id=config_id)
                     result = get_steps_from_raw(fct_slowdown, int(time_start), int(time_end), STEP)
-                    
-                    ax.plot(xvals,
+
+                    # Read HYBRID_RATIO from config.txt for hybrid mode
+                    if lb_mode == "hybrid":
+                        config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                        hybrid_ratio = 50  # default
+                        try:
+                            with open(config_file, 'r') as cf:
+                                for line in cf:
+                                    if line.startswith('HYBRID_RATIO'):
+                                        hybrid_ratio = int(line.split()[1])
+                                        break
+                        except:
+                            pass
+                        label = "hybrid-{}%".format(hybrid_ratio)
+                    else:
+                        label = lb_mode
+
+                    # Skip plotting if no data
+                    if len(result["p99"]) == 0:
+                        continue
+
+                    # Use actual data length for x-axis
+                    actual_xvals = xvals[:len(result["p99"])]
+                    ax.plot(actual_xvals,
                         result["p99"],
                         markersize=1.0,
                         linewidth=3.0,
-                        label="{}".format(lb_mode))
-                
-        ax.legend(bbox_to_anchor=(0.0, 1.2), loc="upper left", borderaxespad=0,
-                frameon=False, fontsize=12, facecolor='white', ncol=2,
-                labelspacing=0.4, columnspacing=0.8)
-        
-        ax.tick_params(axis="x", rotation=40)
-        ax.set_xticks(([0] + xvals)[::2])
-        ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
-        ax.set_ylim(bottom=1)
-        # ax.set_yscale("log")
+                        label=label)
+                    plotted_any = True
 
-        fig.tight_layout()
-        ax.grid(which='minor', alpha=0.2)
-        ax.grid(which='major', alpha=0.5)
-        fig_filename = fig_dir + "/{}.pdf".format("P99_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
-        print(fig_filename)
-        plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
+        # Only save figure if there was data plotted
+        if plotted_any:
+            ax.legend(bbox_to_anchor=(0.0, 1.25), loc="upper left", borderaxespad=0,
+                    frameon=False, fontsize=10, facecolor='white', ncol=3,
+                    labelspacing=0.3, columnspacing=0.6)
+
+            ax.tick_params(axis="x", rotation=40)
+            ax.set_xticks(([0] + xvals)[::2])
+            ax.set_xticklabels(([0] + size2str(result["size"]))[::2], fontsize=10.5)
+            ax.set_ylim(bottom=1)
+            # ax.set_yscale("log")
+
+            fig.tight_layout()
+            ax.grid(which='minor', alpha=0.2)
+            ax.grid(which='major', alpha=0.5)
+            fig_filename = fig_dir + "/{}.pdf".format("P99_TOPO_{}_LOAD_{}_FC_{}".format(k[0], k[1], k[2]))
+            print(fig_filename)
+            plt.savefig(fig_filename, transparent=False, bbox_inches='tight')
         plt.close()
             
 

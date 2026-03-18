@@ -15,6 +15,7 @@ import numpy as np
 
 # LB/CC mode matching
 cc_modes = {
+    0: "none",
     1: "dcqcn",
     3: "hp",
     7: "timely",
@@ -26,6 +27,7 @@ lb_modes = {
     3: "conga",
     6: "letflow",
     9: "conweave",
+    10: "hybrid",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
@@ -89,9 +91,11 @@ def getCdfFromArray(data_arr):
             bkt[1] = 1
             bkt[2] = n_accum
             bkt[3] = p[i]
-    if od[-1][0] != bkt[0]:
+    # Only append if od is not empty
+    if len(od) > 0 and od[-1][0] != bkt[0]:
         od.append(bkt)
-    od.pop(0)
+    if len(od) > 0:
+        od.pop(0)
     return od
 
 def setup():
@@ -169,6 +173,9 @@ def main():
 
     with open(history_filename, "r") as f:
         for line in f.readlines():
+            # Skip lines that don't start with a date pattern (MM/DD/YY)
+            if not line.strip() or not line[0].isdigit():
+                continue
             for topo in topo2bdp.keys():
                 if topo in line:
                     parsed_line = line.replace("\n", "").split(',')
@@ -203,7 +210,7 @@ def main():
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
         
-        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave", "hybrid"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]
@@ -212,6 +219,23 @@ def main():
                 if lb_mode == tgt_lbmode:
                     # plotting
                     filename_uplink = output_dir + "/{id}/{id}_out_uplink.txt".format(id=config_id)
+
+                    # Read HYBRID_RATIO from config.txt for hybrid mode
+                    if lb_mode == "hybrid":
+                        config_file = output_dir + "/{id}/config.txt".format(id=config_id)
+                        hybrid_ratio = 50  # default
+                        try:
+                            with open(config_file, 'r') as cf:
+                                for line in cf:
+                                    if line.startswith('HYBRID_RATIO'):
+                                        hybrid_ratio = int(line.split()[1])
+                                        break
+                        except:
+                            pass
+                        label = "hybrid-{}%".format(hybrid_ratio)
+                    else:
+                        label = lb_mode
+
                     port_list = set()
 
                     with open(filename_uplink, "r") as f:
@@ -222,6 +246,8 @@ def main():
                         last_ts = 0
                         for line in f.readlines():
                             parsed_line = line.replace("\n", "").split(",")
+                            if len(parsed_line) < 4 or not parsed_line[3].strip():
+                                continue
                             now_ts = int(parsed_line[0])
                             now_swid = int(parsed_line[1])
                             now_portid = int(parsed_line[2])
@@ -271,14 +297,14 @@ def main():
                                 ts_data_arr.append(val)
 
                         cdf_ts_data_arr = getCdfFromArray(ts_data_arr)
-                        
+
                         ax.plot([x[0] for x in cdf_ts_data_arr],
                                 [x[3] for x in cdf_ts_data_arr],
                                 markersize=0,
                                 linewidth=3.0,
-                                label="{}".format(lb_mode))
+                                label=label)
         
-        ax.legend(frameon=False, fontsize=12, facecolor='white')
+        ax.legend(frameon=False, fontsize=10, facecolor='white', ncol=2)
         
         ax.grid(which='minor', alpha=0.2)
         ax.grid(which='major', alpha=0.5)

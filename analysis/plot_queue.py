@@ -14,6 +14,7 @@ from cycler import cycler
 
 # LB/CC mode matching
 cc_modes = {
+    0: "none",
     1: "dcqcn",
     3: "hp",
     7: "timely",
@@ -25,6 +26,7 @@ lb_modes = {
     3: "conga",
     6: "letflow",
     9: "conweave",
+    10: "hybrid",
 }
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier
@@ -136,6 +138,9 @@ def main():
 
     with open(history_filename, "r") as f:
         for line in f.readlines():
+            # Skip lines that don't start with a date pattern (MM/DD/YY)
+            if not line.strip() or not line[0].isdigit():
+                continue
             for topo in topo2bdp.keys():
                 if topo in line:
                     parsed_line = line.replace("\n", "").split(',')

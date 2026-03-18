@@ -43,6 +43,7 @@ BUFFER_SIZE {buffer_size}
 
 CC_MODE {cc_mode}
 LB_MODE {lb_mode}
+HYBRID_RATIO {hybrid_ratio}
 ENABLE_PFC {enabled_pfc}
 ENABLE_IRN {enabled_irn}
 
@@ -95,6 +96,7 @@ RANDOM_SEED 1
 
 # LB/CC mode matching
 cc_modes = {
+    "none": 0,       # No congestion control (pure PFC)
     "dcqcn": 1,
     "hpcc": 3,
     "timely": 7,
@@ -107,6 +109,7 @@ lb_modes = {
     "conga": 3,
     "letflow": 6,
     "conweave": 9,
+    "hybrid": 10,  # Hybrid mode: mix of fecmp and drill
 }
 
 topo2bdp = {
@@ -129,7 +132,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='run simulation')
     parser.add_argument('--cc', dest='cc', action='store',
-                        default='dcqcn', help="hpcc/dcqcn/timely/dctcp (default: dcqcn)")
+                        default='dcqcn', help="none/dcqcn/hpcc/timely/dctcp (default: dcqcn)")
     parser.add_argument('--lb', dest='lb', action='store',
                         default='fecmp', help="fecmp/pecmp/drill/conga (default: fecmp)")
     parser.add_argument('--pfc', dest='pfc', action='store',
@@ -150,6 +153,8 @@ def main():
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
+    parser.add_argument('--hybrid_ratio', dest='hybrid_ratio', action='store',
+                        type=int, default=50, help="hybrid mode: ratio of flows using drill (0-100, default: 50)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
                         type=int, default=10000, help="interval of sampling statistics for queue status (default: 10000ns)")
 
@@ -312,7 +317,7 @@ def main():
     # record to history
     simulday = datetime.now().strftime("%m/%d/%y")
     with open("./mix/.history", "a") as history:
-        history.write("{simulday},{config_ID},{cc_mode},{lb_mode},{cwh_tx_expiry_time},{cwh_extra_reply_deadline},{cwh_path_pause_time},{cwh_extra_voq_flush_time},{cwh_default_voq_waiting_time},{pfc},{irn},{has_win},{var_win},{topo},{bw},{cdf},{load},{time}\n".format(
+        history.write("{simulday},{config_ID},{cc_mode},{lb_mode},{cwh_tx_expiry_time},{cwh_extra_reply_deadline},{cwh_path_pause_time},{cwh_extra_voq_flush_time},{cwh_default_voq_waiting_time},{pfc},{irn},{has_win},{var_win},{topo},{bw},{cdf},{load},{time},{hybrid_ratio}\n".format(
             simulday=simulday,
             config_ID=config_ID,
             cc_mode=cc_mode,
@@ -331,6 +336,7 @@ def main():
             cdf=cdf,
             load=netload,
             time=args.simul_time,
+            hybrid_ratio=args.hybrid_ratio,
         ))
 
     # 1 BDP calculation
@@ -352,7 +358,7 @@ def main():
     qlen_mon_start = flowgen_start_time
     qlen_mon_end = flowgen_stop_time
 
-    if (cc_mode == 1):  # DCQCN
+    if (cc_mode == 0):  # No CC (pure PFC)
         ai = 10 * bw / 25
         hai = 25 * bw / 25
         dctcp_ai = 1000
@@ -364,7 +370,28 @@ def main():
         config = config_template.format(id=config_ID, topo=topo, flow=flow,
                                         qlen_mon_start=qlen_mon_start, qlen_mon_end=qlen_mon_end, flowgen_start_time=flowgen_start_time,
                                         flowgen_stop_time=flowgen_stop_time, sw_monitoring_interval=sw_monitoring_interval,
-                                        load=netload, buffer_size=buffer, lb_mode=lb_mode, cwh_tx_expiry_time=cwh_tx_expiry_time,
+                                        load=netload, buffer_size=buffer, lb_mode=lb_mode, hybrid_ratio=args.hybrid_ratio, cwh_tx_expiry_time=cwh_tx_expiry_time,
+                                        cwh_extra_reply_deadline=cwh_extra_reply_deadline, cwh_default_voq_waiting_time=cwh_default_voq_waiting_time,
+                                        cwh_path_pause_time=cwh_path_pause_time, cwh_extra_voq_flush_time=cwh_extra_voq_flush_time,
+                                        enabled_pfc=enabled_pfc, enabled_irn=enabled_irn,
+                                        cc_mode=cc_mode,
+                                        ai=ai, hai=hai, dctcp_ai=dctcp_ai,
+                                        has_win=has_win, var_win=var_win,
+                                        fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
+                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map)
+    elif (cc_mode == 1):  # DCQCN
+        ai = 10 * bw / 25
+        hai = 25 * bw / 25
+        dctcp_ai = 1000
+        fast_react = 0
+        mi = 0
+        int_multi = 1
+        ewma_gain = 0.00390625
+
+        config = config_template.format(id=config_ID, topo=topo, flow=flow,
+                                        qlen_mon_start=qlen_mon_start, qlen_mon_end=qlen_mon_end, flowgen_start_time=flowgen_start_time,
+                                        flowgen_stop_time=flowgen_stop_time, sw_monitoring_interval=sw_monitoring_interval,
+                                        load=netload, buffer_size=buffer, lb_mode=lb_mode, hybrid_ratio=args.hybrid_ratio, cwh_tx_expiry_time=cwh_tx_expiry_time,
                                         cwh_extra_reply_deadline=cwh_extra_reply_deadline, cwh_default_voq_waiting_time=cwh_default_voq_waiting_time,
                                         cwh_path_pause_time=cwh_path_pause_time, cwh_extra_voq_flush_time=cwh_extra_voq_flush_time,
                                         enabled_pfc=enabled_pfc, enabled_irn=enabled_irn,

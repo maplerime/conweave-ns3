@@ -189,6 +189,7 @@ RdmaRxQueuePair::RdmaRxQueuePair() {
     m_nackTimer = Time(0);
     m_milestone_rx = 0;
     m_lastNACK = 0;
+    memset(m_rx_bitmap, 0, sizeof(m_rx_bitmap));
 }
 
 uint32_t RdmaRxQueuePair::GetHash(void) {

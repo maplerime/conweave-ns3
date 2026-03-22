@@ -208,6 +208,9 @@ class RdmaRxQueuePair : public Object {  // Rx side queue pair
     IrnSackManager m_irn_sack_;
     int32_t m_flow_id;
 
+    // Non-IRN receive window (64K bytes)
+    uint8_t m_rx_bitmap[8192];  // 8192 * 8 = 65536 bits, bit i = 1 means byte i received
+
     static TypeId GetTypeId(void);
     RdmaRxQueuePair();
     uint32_t GetHash(void);

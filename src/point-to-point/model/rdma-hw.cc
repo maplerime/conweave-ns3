@@ -125,6 +125,9 @@ TypeId RdmaHw::GetTypeId(void) {
                           MakeTimeAccessor(&RdmaHw::m_irn_rtoHigh), MakeTimeChecker())
             .AddAttribute("IrnBdp", "BDP Limit for IRN in Bytes", UintegerValue(100000),
                           MakeUintegerAccessor(&RdmaHw::m_irn_bdp), MakeUintegerChecker<uint32_t>())
+            .AddAttribute("RxWindow", "Receiver tolerance window in bytes (non-IRN mode)",
+                          UintegerValue(65536), MakeUintegerAccessor(&RdmaHw::m_rx_window),
+                          MakeUintegerChecker<uint32_t>())
             .AddAttribute("L2Timeout", "Sender's timer of waiting for the ack",
                           TimeValue(MilliSeconds(4)), MakeTimeAccessor(&RdmaHw::m_waitAckTimeout),
                           MakeTimeChecker());
@@ -623,6 +626,27 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         }
 
         q->ReceiverNextExpectedSeq += size - (expected - seq);
+        // Slide window: remove acknowledged bytes from bitmap
+        uint32_t advance = size - (expected - seq);
+        if (advance >= 65536) {
+            memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
+        } else {
+            // Shift bitmap right by 'advance' bits
+            uint32_t bytes_to_shift = advance / 8;
+            uint32_t bits_to_shift = advance % 8;
+            if (bytes_to_shift > 0) {
+                memmove(q->m_rx_bitmap, q->m_rx_bitmap + bytes_to_shift,
+                        sizeof(q->m_rx_bitmap) - bytes_to_shift);
+                memset(q->m_rx_bitmap + sizeof(q->m_rx_bitmap) - bytes_to_shift, 0, bytes_to_shift);
+            }
+            if (bits_to_shift > 0) {
+                for (int i = sizeof(q->m_rx_bitmap) - 1; i > 0; i--) {
+                    q->m_rx_bitmap[i] = (q->m_rx_bitmap[i] >> bits_to_shift) |
+                                       ((q->m_rx_bitmap[i - 1] << (8 - bits_to_shift)) & 0xFF);
+                }
+                q->m_rx_bitmap[0] >>= bits_to_shift;
+            }
+        }
         if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) {
             q->m_milestone_rx +=
                 m_ack_interval;  // if ack_interval is small (e.g., 1), condition is meaningless
@@ -648,25 +672,61 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             cnp = true;    // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
             return 2;      // generate SACK
         }
-        if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) {  // new NACK
-            q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
-            q->m_lastNACK = expected;
-            if (m_backto0) {
-                q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk * m_chunk;
-            }
-            cnp = true;  // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
-            return 2;
-        } else {
-            // skip to send NACK
-            return 4;
+
+        // Non-IRN mode: window-based logic
+        // Check if packet is beyond tolerance window
+        if (seq > expected + m_rx_window) {
+            return 0;  // Drop packet beyond window
         }
+
+        // Packet is within window, mark it in bitmap
+        uint32_t offset = seq - expected;
+        for (uint32_t i = 0; i < size && (offset + i) < 65536; i++) {
+            uint32_t bit_pos = offset + i;
+            q->m_rx_bitmap[bit_pos / 8] |= (1 << (bit_pos % 8));
+        }
+
+        // Check how many contiguous bytes are received from expected
+        uint32_t contiguous = 0;
+        while (contiguous < 65536) {
+            uint32_t byte_idx = contiguous / 8;
+            uint8_t bit_mask = 1 << (contiguous % 8);
+            if (q->m_rx_bitmap[byte_idx] & bit_mask) {
+                contiguous++;
+            } else {
+                break;
+            }
+        }
+
+        if (contiguous > 0) {
+            // Slide window: update expected seq and shift bitmap
+            q->ReceiverNextExpectedSeq += contiguous;
+            if (contiguous >= 65536) {
+                memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
+            } else {
+                // Shift bitmap right by 'contiguous' bits
+                uint32_t bytes_to_shift = contiguous / 8;
+                uint32_t bits_to_shift = contiguous % 8;
+                if (bytes_to_shift > 0) {
+                    memmove(q->m_rx_bitmap, q->m_rx_bitmap + bytes_to_shift,
+                            sizeof(q->m_rx_bitmap) - bytes_to_shift);
+                    memset(q->m_rx_bitmap + sizeof(q->m_rx_bitmap) - bytes_to_shift, 0, bytes_to_shift);
+                }
+                if (bits_to_shift > 0) {
+                    for (int i = sizeof(q->m_rx_bitmap) - 1; i > 0; i--) {
+                        q->m_rx_bitmap[i] = (q->m_rx_bitmap[i] >> bits_to_shift) |
+                                           ((q->m_rx_bitmap[i - 1] << (8 - bits_to_shift)) & 0xFF);
+                    }
+                    q->m_rx_bitmap[0] >>= bits_to_shift;
+                }
+            }
+            return 1;  // Generate ACK
+        }
+
+        return 0;  // No progress, don't send ACK
     } else {
         // Duplicate.
         if (m_irn) {
-            // if (q->ReceiverNextExpectedSeq - 1 == q->m_milestone_rx) {
-            // 	return 6; // This generates NACK, but actually functions as an ACK (indicates all
-            // packet has been received)
-            // }
             if (q->m_irn_sack_.IsEmpty()) {
                 return 6;  // This generates NACK, but actually functions as an ACK (indicates all
                            // packet has been received)
@@ -675,17 +735,8 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                 return 2;  // Still in loss recovery mode of IRN
             }
         }
-        // Duplicate.
-        return 1;  // According to IB Spec C9-110
-                   /**
-                    * IB Spec C9-110
-                    * A responder shall respond to all duplicate requests in PSN order;
-                    * i.e. the request with the (logically) earliest PSN shall be executed first. If,
-                    * while responding to a new or duplicate request, a duplicate request is received
-                    * with a logically earlier PSN, the responder shall cease responding
-                    * to the original request and shall begin responding to the duplicate request
-                    * with the logically earlier PSN.
-                    */
+        // Duplicate for non-IRN: drop it
+        return 0;
     }
 }
 

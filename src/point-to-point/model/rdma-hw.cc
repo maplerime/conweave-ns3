@@ -126,7 +126,7 @@ TypeId RdmaHw::GetTypeId(void) {
             .AddAttribute("IrnBdp", "BDP Limit for IRN in Bytes", UintegerValue(100000),
                           MakeUintegerAccessor(&RdmaHw::m_irn_bdp), MakeUintegerChecker<uint32_t>())
             .AddAttribute("RxWindow", "Receiver tolerance window in bytes (non-IRN mode)",
-                          UintegerValue(65536), MakeUintegerAccessor(&RdmaHw::m_rx_window),
+                          UintegerValue(2097152), MakeUintegerAccessor(&RdmaHw::m_rx_window),
                           MakeUintegerChecker<uint32_t>())
             .AddAttribute("L2Timeout", "Sender's timer of waiting for the ack",
                           TimeValue(MilliSeconds(4)), MakeTimeAccessor(&RdmaHw::m_waitAckTimeout),
@@ -467,6 +467,12 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     uint32_t nic_idx = GetNicIdxOfQp(qp);
     Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
 
+    // Record NACK events (out-of-order packets detected by receiver)
+    // l3Prot: 0xFC = ACK, 0xFD = NACK
+    if (ch.l3Prot == 0xFD) {
+        qp->stat.nackCount++;
+    }
+
     if (m_ack_interval == 0)
         std::cout << "ERROR: shouldn't receive ack\n";
     else {
@@ -628,7 +634,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         q->ReceiverNextExpectedSeq += size - (expected - seq);
         // Slide window: remove acknowledged bytes from bitmap
         uint32_t advance = size - (expected - seq);
-        if (advance >= 65536) {
+        if (advance >= 2097152) {
             memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
         } else {
             // Shift bitmap right by 'advance' bits
@@ -647,15 +653,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                 q->m_rx_bitmap[0] >>= bits_to_shift;
             }
         }
-        if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) {
-            q->m_milestone_rx +=
-                m_ack_interval;  // if ack_interval is small (e.g., 1), condition is meaningless
-            return 1;            // Generate ACK
-        } else if (q->ReceiverNextExpectedSeq % m_chunk == 0) {
-            return 1;
-        } else {
-            return 5;
-        }
+        return 1;  // Always send ACK when receiving expected packet
     } else if (seq > expected) {
         // Generate NACK
         if (m_irn) {
@@ -676,19 +674,20 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         // Non-IRN mode: window-based logic
         // Check if packet is beyond tolerance window
         if (seq > expected + m_rx_window) {
+            q->m_window_drop_count++;  // Record window drop
             return 0;  // Drop packet beyond window
         }
 
         // Packet is within window, mark it in bitmap
         uint32_t offset = seq - expected;
-        for (uint32_t i = 0; i < size && (offset + i) < 65536; i++) {
+        for (uint32_t i = 0; i < size && (offset + i) < 2097152; i++) {
             uint32_t bit_pos = offset + i;
             q->m_rx_bitmap[bit_pos / 8] |= (1 << (bit_pos % 8));
         }
 
         // Check how many contiguous bytes are received from expected
         uint32_t contiguous = 0;
-        while (contiguous < 65536) {
+        while (contiguous < 2097152) {
             uint32_t byte_idx = contiguous / 8;
             uint8_t bit_mask = 1 << (contiguous % 8);
             if (q->m_rx_bitmap[byte_idx] & bit_mask) {
@@ -701,7 +700,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         if (contiguous > 0) {
             // Slide window: update expected seq and shift bitmap
             q->ReceiverNextExpectedSeq += contiguous;
-            if (contiguous >= 65536) {
+            if (contiguous >= 2097152) {
                 memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
             } else {
                 // Shift bitmap right by 'contiguous' bits
@@ -720,10 +719,12 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                     q->m_rx_bitmap[0] >>= bits_to_shift;
                 }
             }
-            return 1;  // Generate ACK
+            return 1;  // Generate ACK (window slid)
         }
 
-        return 0;  // No progress, don't send ACK
+        // No window progress, but send ACK with current expected seq to keep sender alive
+        // This prevents timeout on multi-path routing where out-of-order is common
+        return 1;  // Generate ACK with cumulative expected seq
     } else {
         // Duplicate.
         if (m_irn) {
@@ -919,6 +920,9 @@ void RdmaHw::HandleTimeout(Ptr<RdmaQueuePair> qp, Time rto) {
     if (acc_timeout_count.find(qp->m_flow_id) == acc_timeout_count.end())
         acc_timeout_count[qp->m_flow_id] = 0;
     acc_timeout_count[qp->m_flow_id]++;
+
+    // Record timeout event for statistics
+    qp->stat.timeoutCount++;
 
     if (qp->irn.m_enabled) qp->irn.m_recovery = true;
 

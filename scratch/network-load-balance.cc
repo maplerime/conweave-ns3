@@ -102,10 +102,14 @@ FILE *voq_output = NULL;
 FILE *voq_detail_output = NULL;
 FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
+FILE *retrans_output = NULL;
+FILE *window_drop_output = NULL;
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
 std::string fct_output_file = "fct.txt";
+std::string retrans_output_file = "retrans.txt";
+std::string window_drop_output_file = "window_drop.txt";
 std::string pfc_output_file = "pfc.txt";
 std::string cnp_output_file = "cnp.txt";
 std::string qlen_mon_file = "qlen.txt";
@@ -475,9 +479,16 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
                                                        // (with header but no INT)
     uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / b;
 
-    // XXX: remove rxQP from the receiver
+    // Get window drop count from receiver before deleting RxQp
+    uint64_t window_drop_count = 0;
     Ptr<Node> dstNode = n.Get(did);
     Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver>();
+    Ptr<RdmaRxQueuePair> rxQp = rdma->m_rdma->GetRxQp(q->dip.Get(), q->sip.Get(), q->dport, q->sport, q->m_pg, false);
+    if (rxQp != NULL) {
+        window_drop_count = rxQp->m_window_drop_count;
+    }
+
+    // XXX: remove rxQP from the receiver
     rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->sport, q->dport, q->m_pg);
 
     // fprintf(fout, "%lu QP complete\n", Simulator::Now().GetTimeStep());
@@ -485,6 +496,33 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
             Settings::ip_to_node_id(q->dip), q->sport, q->dport, q->m_size,
             q->startTime.GetTimeStep(), (Simulator::Now() - q->startTime).GetTimeStep(),
             standalone_fct);
+
+    // Write retransmission statistics to retrans_output file
+    // Format: src dst sport dport flow_size timeout_count nack_count
+    if (retrans_output != NULL) {
+        fprintf(retrans_output, "%u %u %u %u %lu %lu %lu\n",
+                Settings::ip_to_node_id(q->sip),
+                Settings::ip_to_node_id(q->dip),
+                q->sport,
+                q->dport,
+                q->m_size,
+                q->stat.timeoutCount,
+                q->stat.nackCount);
+        fflush(retrans_output);
+    }
+
+    // Write window drop statistics to window_drop_output file
+    // Format: src dst sport dport flow_size window_drop_count
+    if (window_drop_output != NULL) {
+        fprintf(window_drop_output, "%u %u %u %u %lu %lu\n",
+                Settings::ip_to_node_id(q->sip),
+                Settings::ip_to_node_id(q->dip),
+                q->sport,
+                q->dport,
+                q->m_size,
+                window_drop_count);
+        fflush(window_drop_output);
+    }
 
     // for debugging
     NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
@@ -957,6 +995,12 @@ int main(int argc, char *argv[]) {
             } else if (key.compare("FCT_OUTPUT_FILE") == 0) {
                 conf >> fct_output_file;
                 std::cerr << "FCT_OUTPUT_FILE\t\t" << fct_output_file << '\n';
+            } else if (key.compare("RETRANS_OUTPUT_FILE") == 0) {
+                conf >> retrans_output_file;
+                std::cerr << "RETRANS_OUTPUT_FILE\t\t" << retrans_output_file << '\n';
+            } else if (key.compare("WINDOW_DROP_OUTPUT_FILE") == 0) {
+                conf >> window_drop_output_file;
+                std::cerr << "WINDOW_DROP_OUTPUT_FILE\t\t" << window_drop_output_file << '\n';
             } else if (key.compare("HAS_WIN") == 0) {
                 conf >> has_win;
                 std::cerr << "HAS_WIN\t\t" << has_win << "\n";
@@ -1329,6 +1373,8 @@ int main(int argc, char *argv[]) {
     }
 
     fct_output = fopen(fct_output_file.c_str(), "w");
+    retrans_output = fopen(retrans_output_file.c_str(), "w");
+    window_drop_output = fopen(window_drop_output_file.c_str(), "w");
     flow_input_stream = fopen(flow_input_file.c_str(), "w");
     if (cc_mode == 1) {
         cnp_output = fopen(cnp_output_file.c_str(), "w");

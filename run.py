@@ -25,6 +25,8 @@ FLOW_FILE config/{flow}.txt
 FLOW_INPUT_FILE mix/output/{id}/{id}_in.txt
 CNP_OUTPUT_FILE mix/output/{id}/{id}_out_cnp.txt
 FCT_OUTPUT_FILE mix/output/{id}/{id}_out_fct.txt
+RETRANS_OUTPUT_FILE mix/output/{id}/{id}_out_retrans.txt
+WINDOW_DROP_OUTPUT_FILE mix/output/{id}/{id}_out_window_drop.txt
 PFC_OUTPUT_FILE mix/output/{id}/{id}_out_pfc.txt
 QLEN_MON_FILE mix/output/{id}/{id}_out_qlen.txt
 VOQ_MON_FILE mix/output/{id}/{id}_out_voq.txt

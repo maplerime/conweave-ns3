@@ -203,7 +203,7 @@ def main():
         ax.yaxis.set_ticks_position('left')
         ax.xaxis.set_ticks_position('bottom')
         
-        lbmode_order = ["fecmp", "conga", "letflow", "conweave"]
+        lbmode_order = ["fecmp", "drill", "conga", "letflow", "conweave"]
         for tgt_lbmode in lbmode_order:
             for vv in v:
                 config_id = vv[0]

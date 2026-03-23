@@ -73,7 +73,7 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     irn.m_max_seq = 0;
     irn.m_recovery = false;
 
-    m_timeout = MilliSeconds(8);
+    m_timeout = MilliSeconds(32);
 }
 
 void RdmaQueuePair::SetSize(uint64_t size) { m_size = size; }

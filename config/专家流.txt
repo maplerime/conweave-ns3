@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+import random
+import sys
+
+# 配置
+NUM_NODES = 320
+NUM_EXPERT_NODES = 256
+SMALL_FLOW_SIZE = 8 * 1024  # 8KB
+LARGE_FLOW_SIZE = 16 * 1024 * 1024  # 16MB
+NUM_ROUNDS = 8
+TARGETS_PER_ROUND = 8
+START_TIME_NS = 1000000000  # 1秒
+
+# 小流数量配置
+LARGE_FLOW_COUNTS = [64, 128, 192]
+
+# 设置随机种子以便复现
+random.seed(42)
+
+# 生成节点列表
+all_nodes = list(range(NUM_NODES))
+expert_nodes = random.sample(all_nodes, NUM_EXPERT_NODES)
+remaining_nodes = [n for n in all_nodes if n not in expert_nodes]
+
+print(f"专家节点: {len(expert_nodes)}")
+print(f"剩余节点: {len(remaining_nodes)}")
+
+# 端口分配
+small_flow_pg = 0
+large_flow_pg = 1
+
+# 生成流文件
+flows = []
+sport_counter = 1
+
+# 1. 生成专家节点的小流 (8KB)
+# 每个专家节点向8个随机节点发送，共8轮
+print("\n生成专家小流...")
+for expert in expert_nodes:
+    # 每轮选择8个不同的目标节点
+    for round in range(NUM_ROUNDS):
+        targets = random.sample(all_nodes, TARGETS_PER_ROUND)
+        for target in targets:
+            if expert != target:  # 不发送给自己
+                flows.append({
+                    'src': expert,
+                    'dst': target,
+                    'sport': sport_counter,
+                    'dport': 5000,
+                    'size': SMALL_FLOW_SIZE,
+                    'pg': small_flow_pg,
+                    'start_time': START_TIME_NS
+                })
+                sport_counter += 1
+
+print(f"生成小流数量: {len(flows)}")
+
+# 2. 生成大流 (16MB)
+# 从剩余节点中随机选择发送和接收节点
+for count in LARGE_FLOW_COUNTS:
+    print(f"\n生成{count}条大流...")
+    for _ in range(count):
+        src = random.choice(remaining_nodes)
+        dst = random.choice([n for n in remaining_nodes if n != src])
+        flows.append({
+            'src': src,
+            'dst': dst,
+            'sport': sport_counter,
+            'dport': 5000,
+            'size': LARGE_FLOW_SIZE,
+            'pg': large_flow_pg,
+            'start_time': START_TIME_NS
+        })
+        sport_counter += 1
+
+print(f"生成大流数量: {len(flows) - len([f for f in flows if f['size'] == SMALL_FLOW_SIZE])}")
+print(f"总流数量: {len(flows)}")
+
+# 打乱流顺序（模拟同时发送）
+random.shuffle(flows)
+
+# 输出流文件
+# 格式: src dst sport dport size pg start_time_ns
+output_file = "config/expert_flow.txt"
+with open(output_file, 'w') as f:
+    for flow in flows:
+        f.write(f"{flow['src']} {flow['dst']} {flow['sport']} {flow['dport']} "
+                f"{flow['size']} {flow['pg']} {flow['start_time']}\n")
+
+print(f"\n流文件已生成: {output_file}")
+print(f"小流(PG={small_flow_pg}): {len([f for f in flows if f['size'] == SMALL_FLOW_SIZE])}条")
+print(f"大流(PG={large_flow_pg}): {len([f for f in flows if f['size'] == LARGE_FLOW_SIZE])}条")

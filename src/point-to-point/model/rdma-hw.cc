@@ -126,7 +126,7 @@ TypeId RdmaHw::GetTypeId(void) {
             .AddAttribute("IrnBdp", "BDP Limit for IRN in Bytes", UintegerValue(100000),
                           MakeUintegerAccessor(&RdmaHw::m_irn_bdp), MakeUintegerChecker<uint32_t>())
             .AddAttribute("RxWindow", "Receiver tolerance window in bytes (non-IRN mode)",
-                          UintegerValue(2097152), MakeUintegerAccessor(&RdmaHw::m_rx_window),
+                          UintegerValue(65536), MakeUintegerAccessor(&RdmaHw::m_rx_window),
                           MakeUintegerChecker<uint32_t>())
             .AddAttribute("L2Timeout", "Sender's timer of waiting for the ack",
                           TimeValue(MilliSeconds(4)), MakeTimeAccessor(&RdmaHw::m_waitAckTimeout),
@@ -328,11 +328,12 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     bool cnp_check = false;
-    int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check);
+    uint32_t ack_seq = 0;
+    int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check, ack_seq);
 
     if (x == 1 || x == 2 || x == 6) {  // generate ACK or NACK
         qbbHeader seqh;
-        seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
+        seqh.SetSeq(ack_seq);
         seqh.SetPG(ch.udp.pg);
         seqh.SetSport(ch.udp.dport);
         seqh.SetDport(ch.udp.sport);
@@ -605,8 +606,9 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
  * 2: still in loss recovery of IRN
  * 4: OoO, but skip to send NACK as it is already NACKed.
  * 6: NACK but functionality is ACK (indicating all packets are received)
+ * @param ack_seq Output parameter: the sequence number to send in ACK
  */
-int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp) {
+int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp, uint32_t &ack_seq) {
     uint32_t expected = q->ReceiverNextExpectedSeq;
     if (seq == expected || (seq < expected && seq + size >= expected)) {
         if (m_irn) {
@@ -621,6 +623,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                 }
             }
             size_t progress = q->m_irn_sack_.discardUpTo(q->ReceiverNextExpectedSeq);
+            ack_seq = q->ReceiverNextExpectedSeq;
             if (q->m_irn_sack_.IsEmpty()) {
                 return 6;  // This generates NACK, but actually functions as an ACK (indicates all
                            // packet has been received)
@@ -634,7 +637,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         q->ReceiverNextExpectedSeq += size - (expected - seq);
         // Slide window: remove acknowledged bytes from bitmap
         uint32_t advance = size - (expected - seq);
-        if (advance >= 2097152) {
+        if (advance >= 65536) {
             memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
         } else {
             // Shift bitmap right by 'advance' bits
@@ -653,6 +656,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                 q->m_rx_bitmap[0] >>= bits_to_shift;
             }
         }
+        ack_seq = q->ReceiverNextExpectedSeq;  // Cumulative ACK
         return 1;  // Always send ACK when receiving expected packet
     } else if (seq > expected) {
         // Generate NACK
@@ -668,6 +672,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             NS_ASSERT(q->m_irn_sack_.discardUpTo(expected) ==
                       0);  // SACK blocks must be larger than expected
             cnp = true;    // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
+            ack_seq = q->ReceiverNextExpectedSeq;
             return 2;      // generate SACK
         }
 
@@ -680,14 +685,14 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 
         // Packet is within window, mark it in bitmap
         uint32_t offset = seq - expected;
-        for (uint32_t i = 0; i < size && (offset + i) < 2097152; i++) {
+        for (uint32_t i = 0; i < size && (offset + i) < 65536; i++) {
             uint32_t bit_pos = offset + i;
             q->m_rx_bitmap[bit_pos / 8] |= (1 << (bit_pos % 8));
         }
 
         // Check how many contiguous bytes are received from expected
         uint32_t contiguous = 0;
-        while (contiguous < 2097152) {
+        while (contiguous < 65536) {
             uint32_t byte_idx = contiguous / 8;
             uint8_t bit_mask = 1 << (contiguous % 8);
             if (q->m_rx_bitmap[byte_idx] & bit_mask) {
@@ -700,7 +705,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         if (contiguous > 0) {
             // Slide window: update expected seq and shift bitmap
             q->ReceiverNextExpectedSeq += contiguous;
-            if (contiguous >= 2097152) {
+            if (contiguous >= 65536) {
                 memset(q->m_rx_bitmap, 0, sizeof(q->m_rx_bitmap));
             } else {
                 // Shift bitmap right by 'contiguous' bits
@@ -719,15 +724,18 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                     q->m_rx_bitmap[0] >>= bits_to_shift;
                 }
             }
+            ack_seq = q->ReceiverNextExpectedSeq;  // Cumulative ACK (window slid)
             return 1;  // Generate ACK (window slid)
         }
 
-        // No window progress, but send ACK with current expected seq to keep sender alive
-        // This prevents timeout on multi-path routing where out-of-order is common
-        return 1;  // Generate ACK with cumulative expected seq
+        // No window progress, but send ACK with cumulative expected seq
+        // Sender knows receiver is alive but hasn't received expected packet yet
+        ack_seq = q->ReceiverNextExpectedSeq;  // Cumulative ACK
+        return 1;  // Generate ACK
     } else {
         // Duplicate.
         if (m_irn) {
+            ack_seq = q->ReceiverNextExpectedSeq;
             if (q->m_irn_sack_.IsEmpty()) {
                 return 6;  // This generates NACK, but actually functions as an ACK (indicates all
                            // packet has been received)

@@ -199,9 +199,10 @@ def main():
     if (args.cc == "timely" or args.cc == "hpcc") and args.lb == "conweave":
         raise Exception(
             "CONFIG ERROR : ConWeave currently does not support RTT-based protocols. Plz modify its logic accordingly.")
-    if enabled_irn == 1 and enabled_pfc == 1:
-        raise Exception(
-            "CONFIG ERROR : If IRN is turn-on, then you should turn off PFC (for better perforamnce).")
+    # DISABLED: Allow IRN and PFC to be enabled simultaneously
+    # if enabled_irn == 1 and enabled_pfc == 1:
+    #     raise Exception(
+    #         "CONFIG ERROR : If IRN is turn-on, then you should turn off PFC (for better perforamnce).")
     if enabled_irn == 0 and enabled_pfc == 0:
         raise Exception(
             "CONFIG ERROR : Either IRN or PFC should be true (at least one).")

@@ -112,6 +112,7 @@ lb_modes = {
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier -> all 100Gbps
     "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps
+    "fat_k8_100G_OS2.5": 156000,  # 3-tier -> all 100Gbps, OS=2.5
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t
@@ -145,6 +146,8 @@ def main():
                         default='leaf_spine_128_100G', help="the name of the topology file (default: leaf_spine_128_100G_OS2)")
     parser.add_argument('--cdf', dest='cdf', action='store',
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
+    parser.add_argument('--flow_file', dest='flow_file', action='store',
+                        default=None, help="use pre-generated flow file (skip auto-generation)")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
@@ -190,8 +193,8 @@ def main():
     # get over-subscription ratio from topoogy name
 
     netload = args.netload
-    oversub = int(topo.replace("\n", "").split("OS")[-1].replace(".txt", ""))
-    assert (int(args.netload) % oversub == 0)
+    oversub = float(topo.replace("\n", "").split("OS")[-1].replace(".txt", ""))
+    assert (int(args.netload) % int(oversub) == 0)
     hostload = int(args.netload) / oversub
     assert (hostload > 0)
 
@@ -215,30 +218,39 @@ def main():
         n_host = int(line[0]) - int(line[1])
 
     assert (hostload >= 0 and hostload < 100)
-    flow = "L_{load:.2f}_CDF_{cdf}_N_{n_host}_T_{time}ms_B_{bw}_flow".format(
-        load=hostload, cdf=args.cdf, n_host=n_host, time=int(float(args.simul_time)*1000), bw=bw)
 
-    # check the file exists
-    if (exists(os.getcwd() + "/config/" + flow + ".txt")):
-        print("Input traffic file with load:{load:.2f}, cdf:{cdf}, n_host:{n_host} already exists".format(
-            load=hostload, cdf=cdf, n_host=n_host))
-    else:  # make the input traffic file
-        print("Generate a input traffic file...")
-        print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
-            cdf=os.getcwd() + "/../traffic_gen/" + args.cdf + ".txt",
-            n_host=n_host,
-            load=hostload / 100.0,
-            bw=args.bw + "G",
-            time=args.simul_time,
-            output=os.getcwd() + "/config/" + flow + ".txt"))
+    # Use pre-generated flow file or auto-generate
+    if args.flow_file:
+        # Use pre-generated flow file
+        flow = args.flow_file.replace(".txt", "")
+        if not exists(os.getcwd() + "/config/" + args.flow_file):
+            raise Exception(f"CONFIG ERROR : Flow file {args.flow_file} not found in config/")
+        print(f"Using pre-generated flow file: {args.flow_file}")
+    else:
+        flow = "L_{load:.2f}_CDF_{cdf}_N_{n_host}_T_{time}ms_B_{bw}_flow".format(
+            load=hostload, cdf=args.cdf, n_host=n_host, time=int(float(args.simul_time)*1000), bw=bw)
 
-        os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
-            cdf=os.getcwd() + "/traffic_gen/" + args.cdf + ".txt",
-            n_host=n_host,
-            load=hostload / 100.0,
-            bw=args.bw + "G",
-            time=args.simul_time,
-            output=os.getcwd() + "/config/" + flow + ".txt"))
+        # check the file exists
+        if (exists(os.getcwd() + "/config/" + flow + ".txt")):
+            print("Input traffic file with load:{load:.2f}, cdf:{cdf}, n_host:{n_host} already exists".format(
+                load=hostload, cdf=cdf, n_host=n_host))
+        else:  # make the input traffic file
+            print("Generate a input traffic file...")
+            print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+                cdf=os.getcwd() + "/../traffic_gen/" + args.cdf + ".txt",
+                n_host=n_host,
+                load=hostload / 100.0,
+                bw=args.bw + "G",
+                time=args.simul_time,
+                output=os.getcwd() + "/config/" + flow + ".txt"))
+
+            os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+                cdf=os.getcwd() + "/traffic_gen/" + args.cdf + ".txt",
+                n_host=n_host,
+                load=hostload / 100.0,
+                bw=args.bw + "G",
+                time=args.simul_time,
+                output=os.getcwd() + "/config/" + flow + ".txt"))
 
     # sanity check - bandwidth
     with open("config/{topo}.txt".format(topo=args.topo), 'r') as f_topo:
@@ -273,6 +285,10 @@ def main():
         elif "fat" in topo and enabled_pfc == 1 and enabled_irn == 0:  # 3-tier, Lossless
             cwh_extra_voq_flush_time = 64
             cwh_default_voq_waiting_time = 600
+            cwh_tx_expiry_time = 1000  # 1ms
+        elif "fat" in topo and enabled_pfc == 1 and enabled_irn == 1:  # 3-tier, IRN+PFC
+            cwh_extra_voq_flush_time = 32
+            cwh_default_voq_waiting_time = 400
             cwh_tx_expiry_time = 1000  # 1ms
         else:
             raise Exception(

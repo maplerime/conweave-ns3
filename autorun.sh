@@ -10,44 +10,61 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
     printf "${!1}${2} ${NC}\n"
 }
 
-cecho "GREEN" "Running RDMA Network Load Balancing Simulations (MoE fat-tree topology)"
+cecho "GREEN" "Running Hybrid MoE Experiments (4 different fecmp_bg levels)"
 
-TOPOLOGY="fat_k8_100G_OS2.5" # fat-tree k=8, OS=2.5, 320 hosts
-FLOW_FILE="moe_expert_256to8_8round_8KB.txt" # pre-generated MoE flow file
+TOPOLOGY="fat_k8_100G_OS10" # fat-tree k=8, OS=10, 1280 hosts
 NETLOAD="50" # network load 50%
-RUNTIME="0.02" # 0.02 second (traffic generation) - adjusted for 12 rounds of MoE flows
+RUNTIME="0.05" # 0.05 seconds
 
 cecho "YELLOW" "\n----------------------------------"
 cecho "YELLOW" "TOPOLOGY: ${TOPOLOGY}"
-cecho "YELLOW" "FLOW FILE: ${FLOW_FILE}"
 cecho "YELLOW" "NETWORK LOAD: ${NETLOAD}"
 cecho "YELLOW" "TIME: ${RUNTIME}"
 cecho "YELLOW" "----------------------------------\n"
 
-# Lossless RDMA
-#cecho "GREEN" "Run Lossless RDMA experiments..."
-#python3 run.py --lb fecmp --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null & 
-#sleep 5
-#python3 run.py --lb letflow --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-#sleep 0.1
-#python3 run.py --lb conga --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-#sleep 0.1
-#python3 run.py --lb conweave --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-#sleep 0.1
-#python3 run.py --lb drill --pfc 1 --irn 0 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
-#sleep 0.1
+# Hybrid mode with different fecmp_bg levels
+cecho "GREEN" "Run Hybrid experiments with different fecmp_bg levels..."
 
-# IRN RDMA
-cecho "GREEN" "Run IRN RDMA experiments..."
+# fecmp_bg = 0 (all drill)
+FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
+cecho "YELLOW" "Running: fecmp_bg=0 (all drill), flow: ${FLOW_FILE}"
+python3 run.py --lb hybrid --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} --fecmp_bg 0 2>&1 > /dev/null &
+sleep 0.1
+
+# fecmp_bg = 64
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_64fecmp.txt"
+cecho "YELLOW" "Running: fecmp_bg=64, flow: ${FLOW_FILE}"
+python3 run.py --lb hybrid --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} --fecmp_bg 64 2>&1 > /dev/null &
+sleep 0.1
+
+# fecmp_bg = 128
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_128fecmp.txt"
+cecho "YELLOW" "Running: fecmp_bg=128, flow: ${FLOW_FILE}"
+python3 run.py --lb hybrid --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} --fecmp_bg 128 2>&1 > /dev/null &
+sleep 0.1
+
+# fecmp_bg = 192 (all fecmp)
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+cecho "YELLOW" "Running: fecmp_bg=192 (all fecmp), flow: ${FLOW_FILE}"
+python3 run.py --lb hybrid --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} --fecmp_bg 192 2>&1 > /dev/null &
+sleep 0.1
+
+cecho "GREEN" "Running all in parallel. Check the processors running on background!"
+
+# Pure FECMP mode
+cecho "GREEN" "\n----------------------------------"
+cecho "GREEN" "Run Pure FECMP experiment..."
+FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
+cecho "YELLOW" "Running: lb=fecmp, flow: ${FLOW_FILE}"
 python3 run.py --lb fecmp --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-sleep 5
-python3 run.py --lb letflow --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb conga --pfc 0 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-sleep 0.1
+
+# Conweave mode
+cecho "GREEN" "\n----------------------------------"
+cecho "GREEN" "Run Conweave experiment..."
+FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
+cecho "YELLOW" "Running: lb=conweave, flow: ${FLOW_FILE}"
 python3 run.py --lb conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb drill --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-sleep 0.1
 
-cecho "GREEN" "Runing all in parallel. Check the processors running on background!"
+cecho "GREEN" "\nAll experiments launched in parallel!"

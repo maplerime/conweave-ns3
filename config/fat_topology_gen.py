@@ -1,5 +1,5 @@
 k_fat = 8
-oversubscript = 2.5 # over-subscription between ToR uplink - downlink
+oversubscript = 10 # over-subscription between ToR uplink - downlink (1280 hosts: 8*4*4*10=1280)
 link_rate = 100 # Gbps
 link_latency = 1000 # ns
 

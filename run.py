@@ -45,6 +45,7 @@ CC_MODE {cc_mode}
 LB_MODE {lb_mode}
 ENABLE_PFC {enabled_pfc}
 ENABLE_IRN {enabled_irn}
+FECMP_BG {fecmp_bg}
 
 CONWEAVE_TX_EXPIRY_TIME {cwh_tx_expiry_time}
 CONWEAVE_REPLY_TIMEOUT_EXTRA {cwh_extra_reply_deadline}
@@ -107,12 +108,14 @@ lb_modes = {
     "conga": 3,
     "letflow": 6,
     "conweave": 9,
+    "hybrid": 10,  # Hybrid mode: use pg field to select per-flow LB (pg=2->drill, otherwise->fecmp)
 }
 
 topo2bdp = {
     "leaf_spine_128_100G_OS2": 104000,  # 2-tier -> all 100Gbps
     "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps
     "fat_k8_100G_OS2.5": 156000,  # 3-tier -> all 100Gbps, OS=2.5
+    "fat_k8_100G_OS10": 156000,  # 3-tier -> all 100Gbps, OS=10, 1280 hosts
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t
@@ -148,6 +151,8 @@ def main():
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
     parser.add_argument('--flow_file', dest='flow_file', action='store',
                         default=None, help="use pre-generated flow file (skip auto-generation)")
+    parser.add_argument('--fecmp_bg', dest='fecmp_bg', action='store',
+                        type=int, default=0, help="number of 8MB background flows using pg=0 (fecmp) for hybrid mode (default: 0)")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
@@ -382,7 +387,7 @@ def main():
                                         cwh_extra_reply_deadline=cwh_extra_reply_deadline, cwh_default_voq_waiting_time=cwh_default_voq_waiting_time,
                                         cwh_path_pause_time=cwh_path_pause_time, cwh_extra_voq_flush_time=cwh_extra_voq_flush_time,
                                         enabled_pfc=enabled_pfc, enabled_irn=enabled_irn,
-                                        cc_mode=cc_mode,
+                                        cc_mode=cc_mode, fecmp_bg=args.fecmp_bg,
                                         ai=ai, hai=hai, dctcp_ai=dctcp_ai,
                                         has_win=has_win, var_win=var_win,
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,

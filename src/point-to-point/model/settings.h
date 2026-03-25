@@ -118,7 +118,7 @@ class Settings {
     static const uint32_t CONWEAVE_CTRL_DUMMY_INDEV = 88888888;  // just arbitrary
 
     /* load balancer */
-    // 0: flow ECMP, 2: DRILL, 3: Conga, 4: ConWeave
+    // 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid (use pg field to select per-flow LB)
     static uint32_t lb_mode;
 
     // for common setting

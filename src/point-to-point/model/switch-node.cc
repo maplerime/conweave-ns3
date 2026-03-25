@@ -259,6 +259,19 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     bool control_pkt =
         (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
 
+    // Hybrid mode (lb_mode=10): use pg field to determine per-flow load balancing
+    if (Settings::lb_mode == 10) {
+        if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // pg == 2 -> DRILL, otherwise -> FlowECMP
+        if (ch.udp.pg == 2) {
+            return DoLbDrill(p, ch, nexthops);
+        }
+        return DoLbFlowECMP(p, ch, nexthops);
+    }
+
+    // Original modes
     if (Settings::lb_mode == 0 || control_pkt) {  // control packet (ACK, NACK, PFC, QCN)
         return DoLbFlowECMP(p, ch, nexthops);     // ECMP routing path decision (4-tuple)
     }

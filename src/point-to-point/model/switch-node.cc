@@ -271,6 +271,18 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
+    // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing
+    if (Settings::lb_mode == 11) {
+        if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // pg == 2 -> Conweave, otherwise -> FlowECMP
+        if (ch.udp.pg == 2) {
+            return DoLbConWeave(p, ch, nexthops);
+        }
+        return DoLbFlowECMP(p, ch, nexthops);
+    }
+
     // Original modes
     if (Settings::lb_mode == 0 || control_pkt) {  // control packet (ACK, NACK, PFC, QCN)
         return DoLbFlowECMP(p, ch, nexthops);     // ECMP routing path decision (4-tuple)

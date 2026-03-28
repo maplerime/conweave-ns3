@@ -1368,6 +1368,7 @@ int main(int argc, char *argv[]) {
     topo2bdpMap[std::string("fat_k8_100G_OS2")] = 156000;      // RTT=12480 --> all 100G links
     topo2bdpMap[std::string("fat_k8_100G_OS2.5")] = 156000;    // OS=2.5, 320 hosts
     topo2bdpMap[std::string("fat_k8_100G_OS10")] = 156000;    // OS=10, 1280 hosts
+    topo2bdpMap[std::string("fat_k8_100G_400G_OS10")] = 153000;    // OS=10, 1280 hosts, 400G switch links (actual calculated BDP)
 
     // topology_file
     bool found_topo2bdpMap = false;

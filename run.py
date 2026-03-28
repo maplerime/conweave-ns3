@@ -109,6 +109,7 @@ lb_modes = {
     "letflow": 6,
     "conweave": 9,
     "hybrid": 10,  # Hybrid mode: use pg field to select per-flow LB (pg=2->drill, otherwise->fecmp)
+    "ecmp-conweave": 11,  # ECMP-Conweave mode: use pg field (pg=2->conweave, otherwise->fecmp)
 }
 
 topo2bdp = {
@@ -116,6 +117,7 @@ topo2bdp = {
     "fat_k8_100G_OS2": 156000,  # 3-tier -> all 100Gbps
     "fat_k8_100G_OS2.5": 156000,  # 3-tier -> all 100Gbps, OS=2.5
     "fat_k8_100G_OS10": 156000,  # 3-tier -> all 100Gbps, OS=10, 1280 hosts
+    "fat_k8_100G_400G_OS10": 153000,  # 3-tier -> 100G host, 400G switch links, OS=10, 1280 hosts (actual calculated BDP)
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t

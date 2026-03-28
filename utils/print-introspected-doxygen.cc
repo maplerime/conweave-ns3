@@ -263,10 +263,9 @@ StaticInformation::Gather (TypeId tid)
   m_output.erase (std::unique (m_output.begin (), m_output.end ()), m_output.end ());
 }
 
-void 
+void
 StaticInformation::DoGather (TypeId tid)
 {
-  NS_LOG_FUNCTION (this);
   if (HasAlreadyBeenProcessed (tid))
     {
       return;

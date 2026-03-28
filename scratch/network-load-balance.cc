@@ -487,10 +487,11 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
             standalone_fct);
 
     // for debugging
-    NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
-                 (Settings::ip_to_node_id(q->sip), Settings::ip_to_node_id(q->dip), q->sport,
-                  q->dport, q->m_size, q->startTime.GetTimeStep(),
-                  (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct));
+    NS_LOG_DEBUG(Settings::ip_to_node_id(q->sip) << " " << Settings::ip_to_node_id(q->dip) << " "
+                  << q->sport << " " << q->dport << " " << q->m_size << " "
+                  << q->startTime.GetTimeStep() << " "
+                  << (Simulator::Now() - q->startTime).GetTimeStep() << " "
+                  << standalone_fct);
     Settings::cnt_finished_flows++;
     fflush(fout);
 }
@@ -1323,8 +1324,8 @@ int main(int argc, char *argv[]) {
             sw->m_mmu->ConfigBufferSize(buffer_size * 1024 *
                                         1024);  // default 0, specify in run.py!!
             sw->m_mmu->node_id = sw->GetId();
-            NS_LOG_INFO("Node %u : Broadcom switch (%u ports / %gMB MMU)\n" %
-                        (i, sw->GetNDevices() - 1, sw->m_mmu->GetMmuBufferBytes() / 1000000.));
+            NS_LOG_INFO("Node " << i << " : Broadcom switch (" << sw->GetNDevices() - 1
+                        << " ports / " << sw->m_mmu->GetMmuBufferBytes() / 1000000. << "MB MMU)");
         }
     }
 
@@ -1491,11 +1492,79 @@ int main(int argc, char *argv[]) {
         if (probably_host->GetNodeType() == 0 && probably_switch->GetNodeType() == 1) {
             Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(probably_switch);
             sw->m_isToR = true;
+            sw->SetSwitchType(SWITCH_TYPE_TOR);
             uint32_t hostIP = serverAddress[pair.first].Get();
             sw->m_isToR_hostIP.insert(hostIP);
             if (idxNodeToR.find(sw->GetId()) == idxNodeToR.end()) {
                 idxNodeToR[sw->GetId()] = sw;
             };
+        }
+    }
+
+    /* config switch types (Aggregation and Core) based on node ID range
+     * Assuming k=8 fat-tree with 1280 hosts:
+     * - Hosts: 0-1279
+     * - ToR: 1280-1311 (32 switches)
+     * - Aggregation: 1312-1343 (32 switches)
+     * - Core: 1344-1359 (16 switches)
+     */
+    for (uint32_t i = 0; i < n.GetN(); i++) {
+        Ptr<Node> node = n.Get(i);
+        if (node->GetNodeType() == 1) {  // Switch node
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+            uint32_t swId = sw->GetId();
+            if (!sw->m_isToR) {  // Not ToR, determine if Aggregation or Core
+                if (swId >= 1280 && swId < 1312) {
+                    // ToR (should already be set, but double-check)
+                    sw->SetSwitchType(SWITCH_TYPE_TOR);
+                } else if (swId >= 1312 && swId < 1344) {
+                    // Aggregation
+                    sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                } else if (swId >= 1344 && swId < 1360) {
+                    // Core
+                    sw->SetSwitchType(SWITCH_TYPE_CORE);
+                } else {
+                    // Unknown - use ToR as default for other switches
+                    sw->SetSwitchType(SWITCH_TYPE_TOR);
+                }
+            }
+        }
+    }
+
+    std::cout << "Switch types configured:" << std::endl;
+    uint32_t torCount = 0, aggCount = 0, coreCount = 0;
+    for (uint32_t i = 0; i < n.GetN(); i++) {
+        Ptr<Node> node = n.Get(i);
+        if (node->GetNodeType() == 1) {
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+            switch (sw->GetSwitchType()) {
+                case SWITCH_TYPE_TOR:
+                    torCount++;
+                    break;
+                case SWITCH_TYPE_AGGREGATION:
+                    aggCount++;
+                    break;
+                case SWITCH_TYPE_CORE:
+                    coreCount++;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+    std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
+
+    // Start queue monitoring probe generation on Core switches (only in mode 12: Inflex)
+    if (lb_mode == 12) {
+        std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            Ptr<Node> node = n.Get(i);
+            if (node->GetNodeType() == 1) {
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                if (sw->GetSwitchType() == SWITCH_TYPE_CORE) {
+                    sw->StartProbeGeneration();
+                }
+            }
         }
     }
 
@@ -1683,7 +1752,7 @@ int main(int argc, char *argv[]) {
             if (i->first->GetNodeType() == 1) {
                 Ptr<Node> node = i->first;
                 Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);  // switch
-                NS_LOG_INFO("Switch Info - ID:%u, ToR:%d\n" % (sw->GetId(), sw->m_isToR));
+                NS_LOG_INFO("Switch Info - ID:" << sw->GetId() << ", ToR:" << sw->m_isToR);
                 if (lb_mode == 3) {
                     sw->m_mmu->m_congaRouting.SetConstants(conga_dreTime, conga_agingTime,
                                                            conga_flowletTimeout, conga_quantizeBit,

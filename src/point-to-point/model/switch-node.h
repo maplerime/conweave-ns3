@@ -8,10 +8,20 @@
 
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
+#include "queue-monitor-header.h"
+#include <map>
 
 namespace ns3 {
 
 class Packet;
+
+// Switch type enumeration
+enum SwitchType {
+    SWITCH_TYPE_UNKNOWN = 0,
+    SWITCH_TYPE_TOR = 1,         // Top-of-Rack switch
+    SWITCH_TYPE_AGGREGATION = 2, // Aggregation switch
+    SWITCH_TYPE_CORE = 3         // Core switch
+};
 
 class SwitchNode : public Node {
     static const unsigned qCnt = 8;    // Number of queues/priorities used
@@ -61,11 +71,43 @@ class SwitchNode : public Node {
     // Ptr<BroadcomNode> m_broadcom;
     Ptr<SwitchMmu> m_mmu;
     bool m_isToR;                                 // true if ToR switch
+    SwitchType m_switchType;                     // switch type (TOR/AGGREGATION/CORE)
     std::unordered_set<uint32_t> m_isToR_hostIP;  // host's IP connected to this ToR
+
+    /*----- Queue Monitoring -----*/
+    // Stored queue info from probes (what downstream switches see from us)
+    struct RemoteQueueInfo {
+        uint32_t switchId;
+        uint32_t portId;
+        uint32_t queueLength;
+    };
+    // Map: switch_id -> queue info from that switch
+    std::map<uint32_t, std::vector<RemoteQueueInfo>> m_remoteQueueInfo;
+
+    // Probe generation
+    EventId m_probeEvent;
+    uint64_t m_probeInterval;
+    static const uint64_t DEFAULT_PROBE_INTERVAL = 1000000;  // 1ms in nanoseconds
+
+    // Queue monitoring methods
+    void StartProbeGeneration();
+    void GenerateAndSendProbe();
+    void ProcessProbePacket(Ptr<Packet> p, uint32_t inDev);
+    void AttachQueueMonitorToPacket(Ptr<Packet> p, uint32_t outDev);
+
+    /*----- Inflex Path Selection -----*/
+    // Select uplink path (ToR -> Agg -> Core) based on queue info
+    int SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
+    // Select downlink path (Core -> Agg -> ToR) based on queue info
+    int SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
+    // Get port to reach specific switch
+    int GetPortToSwitch(uint32_t switchId);
 
     static TypeId GetTypeId(void);
     SwitchNode();
     void SetEcmpSeed(uint32_t seed);
+    void SetSwitchType(SwitchType type);
+    SwitchType GetSwitchType() const;
     void AddTableEntry(Ipv4Address &dstAddr, uint32_t intf_idx);
     void ClearTable();
     bool SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet, CustomHeader &ch);

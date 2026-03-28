@@ -110,6 +110,7 @@ lb_modes = {
     "conweave": 9,
     "hybrid": 10,  # Hybrid mode: use pg field to select per-flow LB (pg=2->drill, otherwise->fecmp)
     "ecmp-conweave": 11,  # ECMP-Conweave mode: use pg field (pg=2->conweave, otherwise->fecmp)
+    "inflex": 12,  # Inflex mode: explicit path selection with queue monitoring
 }
 
 topo2bdp = {

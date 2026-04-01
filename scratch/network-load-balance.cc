@@ -102,6 +102,7 @@ FILE *voq_output = NULL;
 FILE *voq_detail_output = NULL;
 FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
+FILE *qlen_output = NULL;
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
@@ -316,6 +317,7 @@ void cnp_freq_monitoring(FILE *fout, Ptr<RdmaHw> rdmahw) {
  * @brief TOR Switch monitoring
  * - VOQ number and uplink throughput at switches
  * - the number of active connections at RNICS
+ * - queue length at each egress port
  */
 void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplink, FILE *fout_conn,
                          uint32_t *lb_mode) {
@@ -350,6 +352,24 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
             // monitor uplink txBytes <time, ToRId, OutDev, Bytes>
             uint64_t uplink_txbyte = swNode->GetTxBytesOutDev(iface);
             fprintf(fout_uplink, "%lu,%u,%u,%lu\n", now, tor2If.first, iface, uplink_txbyte);
+        }
+
+        // monitor queue length for each egress port at TOR switches
+        if (qlen_output != nullptr) {
+            for (const auto &iface : tor2If.second) {
+                Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
+                if (dev) {
+                    Ptr<BEgressQueue> queue = dev->GetQueue();
+                    if (queue) {
+                        uint32_t total_q = 0;
+                        // Sum across all 8 priority queues
+                        for (uint32_t q = 0; q < 8; q++) {
+                            total_q += queue->GetNBytes(q);
+                        }
+                        fprintf(qlen_output, "%lu,%u,%u,%u\n", now, tor2If.first, iface, total_q);
+                    }
+                }
+            }
         }
     }
 
@@ -1823,6 +1843,7 @@ int main(int argc, char *argv[]) {
 
     uplink_output = fopen(uplink_mon_file.c_str(), "w");  // common
     conn_output = fopen(conn_mon_file.c_str(), "w");      // common
+    qlen_output = fopen(qlen_mon_file.c_str(), "w");      // queue length monitoring
 
     // update torId2UplinkIf, torId2DownlinkIf
     for (size_t ToRId = 0; ToRId < Settings::node_num; ToRId++) {

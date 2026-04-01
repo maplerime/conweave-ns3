@@ -87,7 +87,7 @@ class SwitchNode : public Node {
     // Probe generation
     EventId m_probeEvent;
     uint64_t m_probeInterval;
-    static const uint64_t DEFAULT_PROBE_INTERVAL = 1000000;  // 1ms in nanoseconds
+    static const uint64_t DEFAULT_PROBE_INTERVAL = 50000;  // 50us in nanoseconds
 
     // Queue monitoring methods
     void StartProbeGeneration();
@@ -100,6 +100,8 @@ class SwitchNode : public Node {
     int SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
     // Select downlink path (Core -> Agg -> ToR) based on queue info
     int SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
+    // Forward packet at Agg based on path header or Drill
+    int SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);
     // Get port to reach specific switch
     int GetPortToSwitch(uint32_t switchId);
 

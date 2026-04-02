@@ -69,9 +69,9 @@ for g in sorted(receiver_group_ids):
 print(f"Total nodes: {TOTAL_NODES}")
 print(f"Groups: {NUM_GROUPS} (4 nodes per group)")
 print(f"Expert sender groups: {EXPERT_GROUPS}")
-print(f"Receiver groups: {RECEIVER_GROUPS}")
-print(f"Flows per expert group per receiver group: {GROUP_SIZE} (one-to-one)")
-print(f"Total flows per round: {EXPERT_GROUPS * RECEIVER_GROUPS * GROUP_SIZE}")
+print(f"Receiver groups: {RECEIVER_GROUPS} (random 2 per round)")
+print(f"Flows per expert node: 2 (one to each receiver group)")
+print(f"Total flows per round: {EXPERT_GROUPS * GROUP_SIZE * 2}")
 print(f"Fecmp background flows: {FECMP_BG_COUNT}")
 
 # Background: remaining hosts (256 nodes from 64 groups)
@@ -103,28 +103,27 @@ for idx, src in enumerate(bg_sender_node_ids):
     bg_lines.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
 
 # Generate MoE flows with proper timing
-# One-to-one mapping: node i in expert group -> node i in receiver group
-first_round_start = BG_START_TIME + 0.001  # Start 1ms after background
+# All rounds start at the same time
+moe_start_time = BG_START_TIME + 0.001  # Start 1ms after background
 
 for round_id in range(ROUNDS):
-    round_start_time = first_round_start + (round_id * (ROUND_TIME_US + ROUND_INTERVAL_US)) / 1e6
+    # Select random 2 receiver groups for this round (each expert node sends 2 flows)
+    round_receiver_groups = random.sample(receiver_groups_nodes, 2)
 
     for expert_group in expert_groups_nodes:
-        for receiver_group in receiver_groups_nodes:
-            # One-to-one: 4 flows (matching positions)
+        # 4 nodes in expert group sequentially send to 4 nodes in each receiver group
+        for receiver_group in round_receiver_groups:
+            # One-to-one: 4 flows
             for i in range(GROUP_SIZE):
                 src = expert_group[i]
                 dst = receiver_group[i]
-                pg = 2  # drill
-                moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {round_start_time:.9f}\n")
+                pg = 2  # drill/inflex
+                moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f}\n")
 
 # Print timing summary
 print(f"\nTiming summary:")
 print(f"Background flows start: {BG_START_TIME:.6f}s")
-for i in range(min(3, ROUNDS)):
-    t = first_round_start + (i * (ROUND_TIME_US + ROUND_INTERVAL_US)) / 1e6
-    print(f"Round {i} starts: {t:.6f}s (ends approx {t + ROUND_TIME_US/1e6:.6f}s)")
-print(f"...")
+print(f"MoE flows all start: {moe_start_time:.6f}s")
 
 # Statistics
 total_moe_flows = len(moe_lines)

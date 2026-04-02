@@ -871,7 +871,7 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
             return a.totalQueue < b.totalQueue;
         });
 
-    // Attach path header to packet
+    // Attach path header to packet with selected path info
     InflexPathHeader pathHdr;
     pathHdr.SetDirection(false);  // Downlink
     pathHdr.AddHop(best->aggSwitchId, best->port, best->totalQueue);
@@ -902,20 +902,145 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
     bool isCoreSwitch = (nextSwitchId >= 1000);
 
     if (isCoreSwitch) {
-        // Next hop is Core -> use port from path header
+        // Next hop is Core -> compare queue lengths and potentially switch path
+        // Get the path header's recorded queue length for the planned path
+        const std::vector<InflexPathHeader::PathHop>& hops = pathHdr.GetHops();
+        uint32_t currentHopIdx = pathHdr.GetCurrentHop();
+
+        // Get current path's queue length from path header
+        uint32_t currentPathQueue = 0;
+        if (currentHopIdx < hops.size()) {
+            currentPathQueue = hops[currentHopIdx].queueLen;
+        }
+
+        // Find the port with minimum queue length among all available ports
+        uint32_t minQueue = std::numeric_limits<uint32_t>::max();
+        int minQueuePort = -1;
+
         for (int port : nexthops) {
-            if (port == (int)nextPort) {
-                pathHdr.IncrementHop();
-                p->RemoveHeader(pathHdr);
-                p->AddHeader(pathHdr);
-                return port;
+            uint32_t queueLen = CalculateInterfaceLoad(port);
+            if (queueLen < minQueue) {
+                minQueue = queueLen;
+                minQueuePort = port;
             }
         }
-        // Port not found - fallback to Drill
-        return DoLbDrill(p, ch, nexthops);
+
+        // Check if we should switch to a different path
+        // Switch if current path queue > min queue * 1.2
+        bool shouldSwitch = (minQueuePort != -1) &&
+                            (currentPathQueue > minQueue * 12 / 10);  // 1.2 = 12/10
+
+        int selectedPort;
+        if (shouldSwitch && minQueuePort != -1) {
+            // Switch to the path with minimum queue
+            selectedPort = minQueuePort;
+            // Update the path header with new port and queue length
+            p->RemoveHeader(pathHdr);
+            // Update current hop with new port and queue
+            if (currentHopIdx < hops.size()) {
+                // Replace the hop with updated info
+                std::vector<InflexPathHeader::PathHop> updatedHops = hops;
+                updatedHops[currentHopIdx].portId = selectedPort;
+                updatedHops[currentHopIdx].queueLen = minQueue;
+                // Clear and rebuild path header
+                pathHdr.Clear();
+                pathHdr.SetDirection(true);  // uplink
+                pathHdr.SetCurrentHop(currentHopIdx);
+                for (const auto& hop : updatedHops) {
+                    pathHdr.AddHop(hop.switchId, hop.portId, hop.queueLen);
+                }
+            }
+            p->AddHeader(pathHdr);
+        } else {
+            // Use the port from path header
+            selectedPort = -1;
+            for (int port : nexthops) {
+                if (port == (int)nextPort) {
+                    selectedPort = port;
+                    break;
+                }
+            }
+            if (selectedPort == -1) {
+                // Planned port not available, use min queue port
+                selectedPort = minQueuePort;
+            }
+            // Increment hop and update header
+            pathHdr.IncrementHop();
+            p->RemoveHeader(pathHdr);
+            p->AddHeader(pathHdr);
+        }
+
+        return selectedPort;
     } else {
-        // Next hop is ToR in same pod -> use Drill
-        return DoLbDrill(p, ch, nexthops);
+        // Next hop is ToR in same pod -> apply dynamic switching logic
+        // Get the path header's recorded queue length for the planned path
+        const std::vector<InflexPathHeader::PathHop>& hops = pathHdr.GetHops();
+        uint32_t currentHopIdx = pathHdr.GetCurrentHop();
+
+        // Get current path's queue length from path header
+        uint32_t currentPathQueue = 0;
+        if (currentHopIdx < hops.size()) {
+            currentPathQueue = hops[currentHopIdx].queueLen;
+        }
+
+        // Find the port with minimum queue length among all available ports
+        uint32_t minQueue = std::numeric_limits<uint32_t>::max();
+        int minQueuePort = -1;
+
+        for (int port : nexthops) {
+            uint32_t queueLen = CalculateInterfaceLoad(port);
+            if (queueLen < minQueue) {
+                minQueue = queueLen;
+                minQueuePort = port;
+            }
+        }
+
+        // Check if we should switch to a different path
+        // Switch if current path queue > min queue * 1.2
+        bool shouldSwitch = (minQueuePort != -1) &&
+                            (currentPathQueue > minQueue * 12 / 10);  // 1.2 = 12/10
+
+        int selectedPort;
+        if (shouldSwitch && minQueuePort != -1) {
+            // Switch to the path with minimum queue
+            selectedPort = minQueuePort;
+            // Update the path header with new port and queue length
+            p->RemoveHeader(pathHdr);
+            // Update current hop with new port and queue
+            if (currentHopIdx < hops.size()) {
+                // Replace the hop with updated info
+                std::vector<InflexPathHeader::PathHop> updatedHops = hops;
+                updatedHops[currentHopIdx].portId = selectedPort;
+                updatedHops[currentHopIdx].queueLen = minQueue;
+                // Clear and rebuild path header
+                pathHdr.Clear();
+                pathHdr.SetDirection(false);  // downlink
+                pathHdr.SetCurrentHop(currentHopIdx);
+                for (const auto& hop : updatedHops) {
+                    pathHdr.AddHop(hop.switchId, hop.portId, hop.queueLen);
+                }
+            }
+            p->AddHeader(pathHdr);
+        } else {
+            // Use the port from path header
+            selectedPort = -1;
+            for (int port : nexthops) {
+                if (port == (int)nextPort) {
+                    selectedPort = port;
+                    break;
+                }
+            }
+            if (selectedPort == -1) {
+                // Planned port not available, use min queue port
+                selectedPort = minQueuePort;
+            }
+            // Increment hop and update header
+            pathHdr.IncrementHop();
+            p->RemoveHeader(pathHdr);
+            p->AddHeader(pathHdr);
+        }
+
+        return selectedPort;
     }
 }
 

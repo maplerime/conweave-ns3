@@ -119,6 +119,9 @@ topo2bdp = {
     "fat_k8_100G_OS2.5": 156000,  # 3-tier -> all 100Gbps, OS=2.5
     "fat_k8_100G_OS10": 156000,  # 3-tier -> all 100Gbps, OS=10, 1280 hosts
     "fat_k8_100G_400G_OS10": 153000,  # 3-tier -> 100G host, 400G switch links, OS=10, 1280 hosts (actual calculated BDP)
+    "fat_k16_100G_400G_OS1.25": 153000,  # k=16, 100G host, 400G switch, OS=1.25, 1280 hosts
+    "fat_k16_5pods_256perPod_100G_400G_OS1": 153000,  # k=16, 5pods, 256/pod, 1280 hosts
+    "fat_k8_5pods_256perPod_100G_400G_OS1": 153000,  # k=8, 5pods, 256/pod, 1280 hosts
 }
 
 FLOWGEN_DEFAULT_TIME = 2.0  # see /traffic_gen/traffic_gen.py::base_t

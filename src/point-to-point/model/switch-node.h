@@ -87,7 +87,7 @@ class SwitchNode : public Node {
     // Probe generation
     EventId m_probeEvent;
     uint64_t m_probeInterval;
-    static const uint64_t DEFAULT_PROBE_INTERVAL = 50000;  // 50us in nanoseconds
+    static const uint64_t DEFAULT_PROBE_INTERVAL = 20000;  // 20us in nanoseconds
 
     // Queue monitoring methods
     void StartProbeGeneration();

@@ -1,5 +1,5 @@
-k_fat = 8
-oversubscript = 10 # over-subscription between ToR uplink - downlink (1280 hosts: 8*4*4*10=1280)
+k_fat = 16
+oversubscript = 1.25 # over-subscription (1280 hosts: 128*10=1280)
 host_link_rate = 100 # Gbps (server to ToR)
 switch_link_rate = 400 # Gbps (switch-to-switch: ToR-Agg, Agg-Core)
 link_latency = 1000 # ns

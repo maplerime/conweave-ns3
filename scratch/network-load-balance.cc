@@ -1390,6 +1390,9 @@ int main(int argc, char *argv[]) {
     topo2bdpMap[std::string("fat_k8_100G_OS2.5")] = 156000;    // OS=2.5, 320 hosts
     topo2bdpMap[std::string("fat_k8_100G_OS10")] = 156000;    // OS=10, 1280 hosts
     topo2bdpMap[std::string("fat_k8_100G_400G_OS10")] = 153000;    // OS=10, 1280 hosts, 400G switch links (actual calculated BDP)
+    topo2bdpMap[std::string("fat_k16_100G_400G_OS1.25")] = 153000;    // k=16, OS=1.25, 1280 hosts, 400G switch links
+    topo2bdpMap[std::string("fat_k16_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=16, 5pods, 256/pod, 1280 hosts
+    topo2bdpMap[std::string("fat_k8_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=8, 5pods, 256/pod, 1280 hosts
 
     // topology_file
     bool found_topo2bdpMap = false;
@@ -1521,61 +1524,71 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* config switch types (Aggregation and Core) based on node ID range
-     * Assuming k=8 fat-tree with 1280 hosts:
-     * - Hosts: 0-1279
-     * - ToR: 1280-1311 (32 switches)
-     * - Aggregation: 1312-1343 (32 switches)
-     * - Core: 1344-1359 (16 switches)
-     */
-    for (uint32_t i = 0; i < n.GetN(); i++) {
-        Ptr<Node> node = n.Get(i);
-        if (node->GetNodeType() == 1) {  // Switch node
-            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
-            uint32_t swId = sw->GetId();
-            if (!sw->m_isToR) {  // Not ToR, determine if Aggregation or Core
-                if (swId >= 1280 && swId < 1312) {
-                    // ToR (should already be set, but double-check)
-                    sw->SetSwitchType(SWITCH_TYPE_TOR);
-                } else if (swId >= 1312 && swId < 1344) {
-                    // Aggregation
-                    sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
-                } else if (swId >= 1344 && swId < 1360) {
-                    // Core
-                    sw->SetSwitchType(SWITCH_TYPE_CORE);
-                } else {
-                    // Unknown - use ToR as default for other switches
-                    sw->SetSwitchType(SWITCH_TYPE_TOR);
+    // Inflex mode (lb_mode == 12): configure switch types and start probe generation
+    if (lb_mode == 12) {
+        /* config switch types (Aggregation and Core) based on node ID range
+         * Detect topology based on total number of switches:
+         * - k=8, 5pods: 56 switches (20 ToR, 20 Agg, 16 Core)
+         * - k=16, 5pods: 144 switches (40 ToR, 40 Agg, 64 Core)
+         */
+        bool is_k16_5pods = (switch_num == 144);  // k=16, 5pods topology
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            Ptr<Node> node = n.Get(i);
+            if (node->GetNodeType() == 1) {  // Switch node
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                uint32_t swId = sw->GetId();
+                if (!sw->m_isToR) {  // Not ToR, determine if Aggregation or Core
+                    if (is_k16_5pods) {
+                        // k=16, 5pods: Hosts 0-1279, ToR 1280-1319, Agg 1320-1359, Core 1360-1423
+                        if (swId >= 1280 && swId < 1320) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1320 && swId < 1360) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1360 && swId < 1424) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    } else {
+                        // k=8, 5pods: Hosts 0-1279, ToR 1280-1299, Agg 1300-1319, Core 1320-1335
+                        if (swId >= 1280 && swId < 1300) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1300 && swId < 1320) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1320 && swId < 1336) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    }
                 }
             }
         }
-    }
 
-    std::cout << "Switch types configured:" << std::endl;
-    uint32_t torCount = 0, aggCount = 0, coreCount = 0;
-    for (uint32_t i = 0; i < n.GetN(); i++) {
-        Ptr<Node> node = n.Get(i);
-        if (node->GetNodeType() == 1) {
-            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
-            switch (sw->GetSwitchType()) {
-                case SWITCH_TYPE_TOR:
-                    torCount++;
-                    break;
-                case SWITCH_TYPE_AGGREGATION:
-                    aggCount++;
-                    break;
-                case SWITCH_TYPE_CORE:
-                    coreCount++;
-                    break;
-                default:
-                    break;
+        std::cout << "Switch types configured:" << std::endl;
+        uint32_t torCount = 0, aggCount = 0, coreCount = 0;
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            Ptr<Node> node = n.Get(i);
+            if (node->GetNodeType() == 1) {
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                switch (sw->GetSwitchType()) {
+                    case SWITCH_TYPE_TOR:
+                        torCount++;
+                        break;
+                    case SWITCH_TYPE_AGGREGATION:
+                        aggCount++;
+                        break;
+                    case SWITCH_TYPE_CORE:
+                        coreCount++;
+                        break;
+                    default:
+                        break;
+                }
             }
         }
-    }
-    std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
+        std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
 
-    // Start queue monitoring probe generation on Core switches (only in mode 12: Inflex)
-    if (lb_mode == 12) {
+        // Start queue monitoring probe generation on Core switches
         std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
         for (uint32_t i = 0; i < n.GetN(); i++) {
             Ptr<Node> node = n.Get(i);

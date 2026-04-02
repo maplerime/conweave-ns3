@@ -19,10 +19,15 @@ class SimulationResult:
     """Store simulation results for a single configuration."""
 
     def __init__(self, lb_mode: int, fecmp_bg: int, path: str):
-        self.lb_mode = lb_mode  # 10 = Hybrid, 12 = Inflex
+        self.lb_mode = lb_mode  # 0 = ECMP, 10 = Hybrid, 12 = Inflex
         self.fecmp_bg = fecmp_bg
         self.path = path
-        self.mode_name = f"Hybrid({fecmp_bg})" if lb_mode == 10 else f"Inflex({fecmp_bg})"
+        if lb_mode == 0:
+            self.mode_name = "ECMP"
+        elif lb_mode == 10:
+            self.mode_name = f"Hybrid({fecmp_bg})" if fecmp_bg > 0 else "Hybrid(0)"
+        else:  # lb_mode == 12
+            self.mode_name = f"Inflex({fecmp_bg})" if fecmp_bg > 0 else "Inflex(0)"
 
         # FCT metrics (in microseconds)
         self.avg_fct = 0.0
@@ -32,6 +37,11 @@ class SimulationResult:
 
         # PFC count
         self.pfc_count = 0
+
+        # Timeout/Retransmission count
+        self.total_timeout = 0
+        self.avg_timeout = 0.0
+        self.max_timeout = 0
 
         # Queue metrics (in bytes)
         self.avg_qlen = 0.0
@@ -70,20 +80,28 @@ def calculate_percentiles(data) -> Tuple[float, float]:
     return float(sorted_data[p50_idx]), float(sorted_data[p99_idx])
 
 
-def read_fct_results(fct_path: str) -> Tuple[float, float, float, float]:
-    """Read FCT file and return avg, p50, p99, stddev in microseconds."""
+def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int]:
+    """Read FCT file and return avg, p50, p99, stddev in microseconds, and timeout stats."""
     fct_values = []
+    timeout_counts = []
 
     with open(fct_path, 'r') as f:
         for line in f:
             parts = line.strip().split()
-            if len(parts) >= 7:
+            if len(parts) >= 9:
                 # Column 7 is FCT in nanoseconds
                 fct_ns = float(parts[6])
                 fct_values.append(fct_ns)
+                # Column 9 is timeout count
+                timeout_counts.append(int(parts[8]))
+            elif len(parts) >= 7:
+                # Old format without timeout count
+                fct_ns = float(parts[6])
+                fct_values.append(fct_ns)
+                timeout_counts.append(0)
 
     if not fct_values:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0
 
     fct_values = np.array(fct_values)
     avg_us = np.mean(fct_values) / 1000  # Convert to microseconds
@@ -93,7 +111,12 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float]:
     p50_us /= 1000
     p99_us /= 1000
 
-    return avg_us, p50_us, p99_us, stddev_us
+    # Timeout statistics
+    total_timeout = sum(timeout_counts)
+    avg_timeout = np.mean(timeout_counts) if timeout_counts else 0.0
+    max_timeout = max(timeout_counts) if timeout_counts else 0
+
+    return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout
 
 
 def read_pfc_count(pfc_path: str) -> int:
@@ -181,7 +204,8 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
 
         # Read FCT data
         if fct_path.exists():
-            result.avg_fct, result.p50_fct, result.p99_fct, result.stddev_fct = read_fct_results(str(fct_path))
+            (result.avg_fct, result.p50_fct, result.p99_fct, result.stddev_fct,
+             result.total_timeout, result.avg_timeout, result.max_timeout) = read_fct_results(str(fct_path))
         else:
             print(f"Warning: FCT file not found for {dir_id}")
 
@@ -219,25 +243,36 @@ def format_delta(delta_percent: float, show_sign: bool = True) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult]):
     """Print FCT performance comparison table."""
-    # Sort by mode name (Hybrid first, then Inflex, by fBG value)
-    sorted_keys = sorted(results.keys(), key=lambda x: (x.split('(')[0], int(x.split('(')[1].split(')')[0])))
+    # Sort by mode name: ECMP, Hybrid, then Inflex, by fBG value
+    def sort_key(x):
+        mode = x.split('(')[0]
+        if mode == 'ECMP':
+            return (0, 0)
+        bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+        if mode == 'Hybrid':
+            return (1, bg)
+        elif mode == 'Inflex':
+            return (2, bg)
+        return (3, bg)
 
-    # Find Hybrid(0) baseline
-    baseline = results.get("Hybrid(0)")
+    sorted_keys = sorted(results.keys(), key=sort_key)
+
+    # Find baseline (prefer ECMP, otherwise Hybrid(0))
+    baseline = results.get("ECMP") or results.get("Hybrid(0)")
     baseline_avg = baseline.avg_fct if baseline else 0
     baseline_p50 = baseline.p50_fct if baseline else 0
     baseline_p99 = baseline.p99_fct if baseline else 0
 
-    print("\n" + "="*90)
+    print("\n" + "="*120)
     print("FCT 性能对比 (Flow Completion Time)")
-    print("="*90)
-    print(f"{'模式':<12} {'Avg(μs)':>12} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(万)':>12} {'StdDev':>12}")
-    print("-"*90)
+    print("="*120)
+    print(f"{'模式':<12} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(万)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*120)
 
     for key in sorted_keys:
         r = results[key]
 
-        # Calculate percentage deltas relative to Hybrid(0)
+        # Calculate percentage deltas relative to baseline
         avg_delta = ((r.avg_fct - baseline_avg) / baseline_avg * 100) if baseline_avg > 0 else 0
         p50_delta = ((r.p50_fct - baseline_p50) / baseline_p50 * 100) if baseline_p50 > 0 else 0
         p99_delta = ((r.p99_fct - baseline_p99) / baseline_p99 * 100) if baseline_p99 > 0 else 0
@@ -247,11 +282,13 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         p99_str = f"{int(r.p99_fct)} ({format_delta(p99_delta)})"
 
         pfc_str = f"{r.pfc_count / 10000:.1f}"
-        stddev_str = f"{int(r.stddev_fct)}"
+        timeout_str = f"{r.total_timeout:,}"
+        avg_to_str = f"{r.avg_timeout:.2f}"
+        max_to_str = f"{r.max_timeout}"
 
-        print(f"{key:<12} {avg_str:>12} {p50_str:>12} {p99_str:>12} {pfc_str:>12} {stddev_str:>12}")
+        print(f"{key:<12} {avg_str:>14} {p50_str:>12} {p99_str:>12} {pfc_str:>10} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
 
-    print("="*90)
+    print("="*120)
 
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
@@ -292,26 +329,54 @@ def print_qlen_table(results: Dict[str, SimulationResult]):
 
 def print_summary(results: Dict[str, SimulationResult]):
     """Print summary analysis."""
-    print("\n" + "="*70)
+    print("\n" + "="*80)
     print("关键发现 (Key Findings)")
-    print("="*70)
+    print("="*80)
 
+    ecmp = results.get("ECMP")
     hybrid_0 = results.get("Hybrid(0)")
     inflex_0 = results.get("Inflex(0)")
+    hybrid_128 = results.get("Hybrid(128)")
+    inflex_128 = results.get("Inflex(128)")
     hybrid_192 = results.get("Hybrid(192)")
     inflex_192 = results.get("Inflex(192)")
 
+    # ECMP comparison (if available)
+    if ecmp and hybrid_0:
+        avg_delta = ((hybrid_0.avg_fct - ecmp.avg_fct) / ecmp.avg_fct * 100)
+        print(f"• ECMP负载: Hybrid Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+
+    if ecmp and inflex_0:
+        avg_delta = ((inflex_0.avg_fct - ecmp.avg_fct) / ecmp.avg_fct * 100)
+        print(f"• ECMP负载: Inflex Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+
+    # Low load (0) comparison
     if hybrid_0 and inflex_0:
         avg_delta = ((inflex_0.avg_fct - hybrid_0.avg_fct) / hybrid_0.avg_fct * 100)
         p50_delta = ((inflex_0.p50_fct - hybrid_0.p50_fct) / hybrid_0.p50_fct * 100)
         print(f"• 低负载(0): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
         print(f"• 低负载(0): Inflex P50 {'优于' if p50_delta < 0 else '劣于'} Hybrid {abs(p50_delta):.1f}%")
 
+    # Medium load (128) comparison - NEW
+    if hybrid_128 and inflex_128:
+        avg_delta = ((inflex_128.avg_fct - hybrid_128.avg_fct) / hybrid_128.avg_fct * 100)
+        p99_delta = ((inflex_128.p99_fct - hybrid_128.p99_fct) / hybrid_128.p99_fct * 100)
+        print(f"• 中负载(128): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
+        print(f"• 中负载(128): Inflex P99 {'优于' if p99_delta < 0 else '劣于'} Hybrid {abs(p99_delta):.1f}%")
+
+    # High load (192) comparison
     if hybrid_192 and inflex_192:
         avg_delta = ((inflex_192.avg_fct - hybrid_192.avg_fct) / hybrid_192.avg_fct * 100)
         p99_delta = ((inflex_192.p99_fct - hybrid_192.p99_fct) / hybrid_192.p99_fct * 100)
         print(f"• 高负载(192): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
         print(f"• 高负载(192): Inflex P99 {'优于' if p99_delta < 0 else '劣于'} Hybrid {abs(p99_delta):.1f}%")
+
+    # Timeout statistics
+    total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k)
+    total_inflex_to = sum(r.total_timeout for k, r in results.items() if "Inflex" in k)
+    if total_hybrid_to > 0 and total_inflex_to > 0:
+        to_ratio = total_inflex_to / total_hybrid_to
+        print(f"• 超时重传: Inflex 总数 {total_inflex_to:,}, Hybrid 总数 {total_hybrid_to:,}, 比例 {to_ratio:.2f}x")
 
     # PFC comparison
     total_hybrid_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid" in k)
@@ -319,6 +384,8 @@ def print_summary(results: Dict[str, SimulationResult]):
     if total_hybrid_pfc > 0:
         pfc_ratio = total_inflex_pfc / total_hybrid_pfc
         print(f"• PFC事件: Inflex 是 Hybrid 的 {pfc_ratio:.2f}x")
+
+    print("="*80)
 
     print("="*70)
 

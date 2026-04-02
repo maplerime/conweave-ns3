@@ -21,11 +21,12 @@
 #include "ppp-header.h"
 #include "qbb-header.h"
 
+// Global timeout counter for all flows (accessible from network-load-balance.cc)
+std::unordered_map<unsigned, unsigned> acc_timeout_count;
+
 namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE("RdmaHw");
-
-std::unordered_map<unsigned, unsigned> acc_timeout_count;
 uint64_t RdmaHw::nAllPkts = 0;
 
 TypeId RdmaHw::GetTypeId(void) {

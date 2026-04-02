@@ -104,6 +104,9 @@ FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
 FILE *qlen_output = NULL;
 
+// Timeout counter is defined in rdma-hw.cc
+extern std::unordered_map<unsigned, unsigned> acc_timeout_count;
+
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
 std::string fct_output_file = "fct.txt";
@@ -500,11 +503,16 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver>();
     rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->sport, q->dport, q->m_pg);
 
+    // Get timeout count for this flow
+    unsigned timeout_count = 0;
+    if (acc_timeout_count.find(q->m_flow_id) != acc_timeout_count.end())
+        timeout_count = acc_timeout_count[q->m_flow_id];
+
     // fprintf(fout, "%lu QP complete\n", Simulator::Now().GetTimeStep());
-    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu\n", Settings::ip_to_node_id(q->sip),
+    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu %u\n", Settings::ip_to_node_id(q->sip),
             Settings::ip_to_node_id(q->dip), q->sport, q->dport, q->m_size,
             q->startTime.GetTimeStep(), (Simulator::Now() - q->startTime).GetTimeStep(),
-            standalone_fct);
+            standalone_fct, timeout_count);
 
     // for debugging
     NS_LOG_DEBUG(Settings::ip_to_node_id(q->sip) << " " << Settings::ip_to_node_id(q->dip) << " "

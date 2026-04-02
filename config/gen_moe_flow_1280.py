@@ -11,10 +11,10 @@ import argparse
 # Parse arguments
 parser = argparse.ArgumentParser(description='Generate MoE flow file with hybrid pg')
 parser.add_argument('--fecmp_bg', type=int, default=0,
-                    help='Number of 8MB background flows using pg=0 (fecmp), rest use pg=2 (drill)')
+                    help='Number of 8MB background flows using pg=1 (fecmp), no other background flows')
 args = parser.parse_args()
 
-FECMP_BG_COUNT = args.fecmp_bg  # Number of 8MB flows with pg=0
+FECMP_BG_COUNT = args.fecmp_bg  # Number of 8MB background flows with pg=1
 
 # Parameters
 TOTAL_NODES = 1280
@@ -80,7 +80,12 @@ for g in remaining_groups:
     if g not in receiver_group_ids:
         remaining_nodes.extend([g * GROUP_SIZE + i for i in range(GROUP_SIZE)])
 
-bg_sender_node_ids = random.sample(remaining_nodes, BG_SENDERS)
+# Number of background senders equals FECMP_BG_COUNT (no extra flows)
+if FECMP_BG_COUNT > 0:
+    bg_sender_node_ids = random.sample(remaining_nodes, FECMP_BG_COUNT)
+else:
+    bg_sender_node_ids = []
+
 # Background receivers: any node not in expert senders
 all_expert_nodes = []
 for g in expert_group_ids:
@@ -93,13 +98,10 @@ moe_lines = []
 bg_lines = []
 
 # Generate background flows (placed at beginning of file)
-# First FECMP_BG_COUNT flows use pg=0 (fecmp), rest use pg=2 (drill)
+# All background flows use pg=1 (fecmp), number of flows = FECMP_BG_COUNT
 for idx, src in enumerate(bg_sender_node_ids):
     dst = random.choice(bg_receiver_candidates)
-    if idx < FECMP_BG_COUNT:
-        pg = 0  # fecmp
-    else:
-        pg = 2  # drill
+    pg = 1  # fecmp only
     bg_lines.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
 
 # Generate MoE flows with proper timing
@@ -133,14 +135,13 @@ bg_traffic = total_bg_flows * BG_FLOW_SIZE
 total_traffic = moe_traffic + bg_traffic
 
 # Count pg values
-bg_pg_0 = sum(1 for line in bg_lines if line.split()[2] == "0")
-bg_pg_2 = sum(1 for line in bg_lines if line.split()[2] == "2")
+bg_pg_1 = sum(1 for line in bg_lines if line.split()[2] == "1")
 moe_pg_2 = sum(1 for line in moe_lines if line.split()[2] == "2")
 
 print(f"\nFlow statistics:")
-print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
-print(f"  - pg=0 (fecmp): {bg_pg_0}")
-print(f"  - pg=2 (drill): {bg_pg_2}")
+if total_bg_flows > 0:
+    print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
+    print(f"  - pg=1 (fecmp): {bg_pg_1}")
 print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
 print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
 print(f"  - pg=2 (drill): {moe_pg_2}")

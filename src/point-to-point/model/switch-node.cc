@@ -274,39 +274,6 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     bool control_pkt =
         (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
 
-    // Check if this packet has InflexPathHeader (explicit path routing)
-    InflexPathHeader pathHdr;
-    bool hasPathHdr = false;
-    try {
-        // Peek without removing to check if header exists
-        p->PeekHeader(pathHdr);
-        hasPathHdr = true;
-    } catch (...) {
-        hasPathHdr = false;
-    }
-
-    if (hasPathHdr && Settings::lb_mode == 12) {
-        // Follow the explicit path in the header
-        if (m_switchType == SWITCH_TYPE_AGGREGATION) {
-            // Agg switch follows the path
-            uint32_t nextSwitchId, nextPortId;
-            if (pathHdr.GetNextHop(nextSwitchId, nextPortId)) {
-                // Remove header to update hop index
-                p->RemoveHeader(pathHdr);
-                pathHdr.IncrementHop();
-                p->AddHeader(pathHdr);
-
-                // Use the specified port
-                for (int port : nexthops) {
-                    if ((uint32_t)port == nextPortId) {
-                        return port;
-                    }
-                }
-            }
-        }
-        // Tor/Core handle path selection in their respective functions
-    }
-
     // Hybrid mode (lb_mode=10): use pg field to determine per-flow load balancing
     if (Settings::lb_mode == 10) {
         if (control_pkt) {
@@ -548,22 +515,30 @@ void SwitchNode::GenerateAndSendProbe() {
         return;
     }
 
-    Ptr<Packet> p = Create<Packet>(0);  // Empty probe packet
-    QueueProbeTag probeTag;  // Tag to identify this as a probe packet
-    p->AddPacketTag(probeTag);
-
-    QueueMonitorHeader monitorHdr;
-    // Core sends empty header - Agg will detect empty = from Core
-
-    p->AddHeader(monitorHdr);
-
-    // Broadcast to Agg switches (all ports except possibly CPU port)
-    // Use 0x0800 as protocol number (IPv4)
+    // For each port, create a probe packet with that port's receiving queue length
     for (uint32_t port = 1; port < GetNDevices(); port++) {
         Ptr<NetDevice> dev = GetDevice(port);
-        if (dev->IsLinkUp()) {
-            dev->Send(p->Copy(), GetDevice(port)->GetBroadcast(), 0x0800);
+        if (!dev->IsLinkUp()) {
+            continue;
         }
+
+        Ptr<Packet> p = Create<Packet>(0);
+        QueueProbeTag probeTag;
+        p->AddPacketTag(probeTag);
+
+        QueueMonitorHeader monitorHdr;
+        // Get receiving queue length for this port
+        uint32_t rxQueueLen = 0;
+        Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
+        if (qbbDev) {
+            for (uint32_t q = 0; q < 8; q++) {
+                rxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
+            }
+        }
+        monitorHdr.SetSenderRxQueueLen(rxQueueLen);
+
+        p->AddHeader(monitorHdr);
+        dev->Send(p, dev->GetBroadcast(), 0x0800);
     }
 
     // Schedule next probe
@@ -578,68 +553,66 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
     if (m_switchType == SWITCH_TYPE_AGGREGATION) {
         p->RemoveHeader(monitorHdr);
 
-        // Detect direction: empty header = from Core (forward path)
-        // Non-empty header = from Tor (reverse path)
-        bool isFromCore = monitorHdr.GetAllQueueInfo().empty();
+        // Get the rx queue length from the sender
+        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
+
+        // Detect direction by checking if inDev is connected to Core or Tor
+        // Assume Core ports are higher numbered than Tor ports
+        uint32_t midPort = GetNDevices() / 2;
+        bool isFromCore = (inDev > midPort);
 
         if (isFromCore) {
-            // Forward path: add Agg→Core queue info, broadcast to all Tor
-            Ptr<NetDevice> inDevDevice = GetDevice(inDev);
-            Ptr<QbbNetDevice> qbbIn = DynamicCast<QbbNetDevice>(inDevDevice);
-            if (qbbIn) {
-                uint32_t qLen = 0;
-                for (uint32_t q = 0; q < 8; q++) {
-                    qLen += qbbIn->GetQueue()->GetNBytes(q);
-                }
-                monitorHdr.AddQueueInfo(m_id, inDev, qLen);
-            }
+            // Forward path: from Core, store in uplink storage
+            m_uplinkRxQueueLen[inDev] = receivedRxQueueLen;
 
-            p->AddHeader(monitorHdr);
-            // Broadcast to all Tor (all ports except inDev)
-            for (uint32_t port = 1; port < GetNDevices(); port++) {
-                if (port != inDev && GetDevice(port)->IsLinkUp()) {
+            // Forward to all Tor switches (ports 1 to midPort)
+            for (uint32_t port = 1; port <= midPort; port++) {
+                if (GetDevice(port)->IsLinkUp()) {
                     Ptr<NetDevice> dev = GetDevice(port);
-                    dev->Send(p->Copy(), dev->GetBroadcast(), 0x0800);
+                    // Get this port's receiving queue length
+                    uint32_t txRxQueueLen = 0;
+                    Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
+                    if (qbbDev) {
+                        for (uint32_t q = 0; q < 8; q++) {
+                            txRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
+                        }
+                    }
+
+                    // Create new probe with this port's rx queue length
+                    Ptr<Packet> newP = Create<Packet>(0);
+                    QueueProbeTag probeTag;
+                    newP->AddPacketTag(probeTag);
+                    QueueMonitorHeader newHdr;
+                    newHdr.SetSenderRxQueueLen(txRxQueueLen);
+                    newP->AddHeader(newHdr);
+                    dev->Send(newP, dev->GetBroadcast(), 0x0800);
                 }
             }
         } else {
-            // Reverse path: from Tor, update Tor entry's queue, send back to Core
-            uint32_t aggToCorePort = 0;
-            uint32_t torSwitchId = 0;
-            uint32_t torPort = 0;
+            // Reverse path: from Tor, store in downlink storage
+            m_downlinkRxQueueLen[inDev] = receivedRxQueueLen;
 
-            // Find Agg's port toward Core and Tor's info
-            for (const auto &info : monitorHdr.GetAllQueueInfo()) {
-                if (info.switchId == m_id) {
-                    aggToCorePort = info.portId;
-                } else {
-                    // This is Tor's entry
-                    torSwitchId = info.switchId;
-                    torPort = info.portId;
-                }
-            }
-
-            if (aggToCorePort > 0 && torSwitchId > 0) {
-                // Get Agg→Tor queue length (on inDev port, the port from which we received Tor's probe)
-                uint32_t aggToTorQueue = 0;
-                Ptr<NetDevice> inDevDevice = GetDevice(inDev);
-                Ptr<QbbNetDevice> qbbIn = DynamicCast<QbbNetDevice>(inDevDevice);
-                if (qbbIn) {
-                    for (uint32_t q = 0; q < 8; q++) {
-                        aggToTorQueue += qbbIn->GetQueue()->GetNBytes(q);
+            // Send back to Core (ports midPort+1 to end)
+            for (uint32_t port = midPort + 1; port < GetNDevices(); port++) {
+                if (GetDevice(port)->IsLinkUp()) {
+                    Ptr<NetDevice> dev = GetDevice(port);
+                    // Get this port's receiving queue length
+                    uint32_t txRxQueueLen = 0;
+                    Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
+                    if (qbbDev) {
+                        for (uint32_t q = 0; q < 8; q++) {
+                            txRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
+                        }
                     }
-                }
 
-                // Rebuild header:
-                monitorHdr.Clear();
-                monitorHdr.AddQueueInfo(m_id, aggToCorePort, 0);           // Agg: keep port for routing, qLen=0
-                monitorHdr.AddQueueInfo(torSwitchId, torPort, aggToTorQueue); // Tor: update queue to Agg→Tor queue
-
-                p->AddHeader(monitorHdr);
-                // Send to Core via aggToCorePort
-                Ptr<NetDevice> outDev = GetDevice(aggToCorePort);
-                if (outDev->IsLinkUp()) {
-                    outDev->Send(p, outDev->GetBroadcast(), 0x0800);
+                    // Create new probe with this port's rx queue length
+                    Ptr<Packet> newP = Create<Packet>(0);
+                    QueueProbeTag probeTag;
+                    newP->AddPacketTag(probeTag);
+                    QueueMonitorHeader newHdr;
+                    newHdr.SetSenderRxQueueLen(txRxQueueLen);
+                    newP->AddHeader(newHdr);
+                    dev->Send(newP, dev->GetBroadcast(), 0x0800);
                 }
             }
         }
@@ -647,52 +620,37 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
     else if (m_switchType == SWITCH_TYPE_TOR) {
         p->RemoveHeader(monitorHdr);
 
-        // ToR stores all received queue info (from Agg)
-        m_remoteQueueInfo.clear();
-        for (const auto &info : monitorHdr.GetAllQueueInfo()) {
-            RemoteQueueInfo rinfo;
-            rinfo.switchId = info.switchId;
-            rinfo.portId = info.portId;
-            rinfo.queueLength = info.queueLength;
-            m_remoteQueueInfo[info.switchId].push_back(rinfo);
+        // Store the rx queue length from Agg
+        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
+        m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
+
+        // Send reverse probe back to Agg with Tor's rx queue length
+        Ptr<NetDevice> inDevDevice = GetDevice(inDev);
+        uint32_t torRxQueueLen = 0;
+        Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(inDevDevice);
+        if (qbbDev) {
+            for (uint32_t q = 0; q < 8; q++) {
+                torRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
+            }
         }
 
-        // Also store Tor's own info (Tor→Agg port, queue=0)
-        RemoteQueueInfo torInfo;
-        torInfo.switchId = m_id;
-        torInfo.portId = inDev;
-        torInfo.queueLength = 0;
-        m_remoteQueueInfo[m_id].push_back(torInfo);
+        Ptr<Packet> newP = Create<Packet>(0);
+        QueueProbeTag probeTag;
+        newP->AddPacketTag(probeTag);
+        QueueMonitorHeader newHdr;
+        newHdr.SetSenderRxQueueLen(torRxQueueLen);
+        newP->AddHeader(newHdr);
 
-        std::cout << "ToR " << m_id << " stored queue info from "
-                  << m_remoteQueueInfo.size() << " switches" << std::endl;
-
-        // Add Tor's own info to probe header (keep Agg's info for reverse path routing)
-        monitorHdr.AddQueueInfo(m_id, inDev, 0);
-
-        // Send reverse probe back to the Agg (inDev port)
-        // The header now contains: (Agg_id, agg_to_core_port, agg_queue) + (Tor_id, tor_port, 0)
-        p->AddHeader(monitorHdr);
-        Ptr<NetDevice> inDevDevice = GetDevice(inDev);
         if (inDevDevice->IsLinkUp()) {
-            inDevDevice->Send(p, inDevDevice->GetBroadcast(), 0x0800);
+            inDevDevice->Send(newP, inDevDevice->GetBroadcast(), 0x0800);
         }
     }
     else if (m_switchType == SWITCH_TYPE_CORE) {
-        // Core stores queue info from reverse path probes
         p->RemoveHeader(monitorHdr);
 
-        m_remoteQueueInfo.clear();
-        for (const auto &info : monitorHdr.GetAllQueueInfo()) {
-            RemoteQueueInfo rinfo;
-            rinfo.switchId = info.switchId;
-            rinfo.portId = info.portId;
-            rinfo.queueLength = info.queueLength;
-            m_remoteQueueInfo[info.switchId].push_back(rinfo);
-        }
-
-        std::cout << "Core " << m_id << " stored queue info from "
-                  << m_remoteQueueInfo.size() << " switches" << std::endl;
+        // Store the rx queue length from Agg
+        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
+        m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
     }
 }
 
@@ -730,61 +688,47 @@ void SwitchNode::AttachQueueMonitorToPacket(Ptr<Packet> p, uint32_t outDev) {
  *******************************************/
 
 int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // ToR selects path: ToR -> Agg -> Core
-    // Calculate total queue length for each path (2-hop sum)
-    // Select path with minimum total queue length
+    // ToR selects uplink port: ToR -> Agg
+    // For each port, calculate: local_tx_queue + remote_rx_queue (stored from probe)
+    // Select port with minimum total
 
-    if (m_remoteQueueInfo.empty()) {
+    if (m_remoteRxQueueLen.empty()) {
         // No queue info yet, fall back to ECMP
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
-    // Build path options: for each Agg reachable from this ToR,
-    // calculate queue length: ToR->Agg (local) + Agg->Core (from stored probe)
     struct PathOption {
         int port;
-        uint32_t aggSwitchId;
         uint32_t totalQueue;
     };
     std::vector<PathOption> pathOptions;
 
     // For each output port (to Agg), calculate total queue length
     for (int port : nexthops) {
-        // Get local ToR→Agg queue length for this port
-        uint32_t torToAggQueue = 0;
+        // Get local ToR→Agg tx queue length for this port
+        uint32_t localTxQueue = 0;
         Ptr<NetDevice> dev = GetDevice(port);
         Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
         if (qbb) {
             for (uint32_t q = 0; q < 8; q++) {
-                torToAggQueue += qbb->GetQueue()->GetNBytes(q);
+                localTxQueue += qbb->GetQueue()->GetNBytes(q);
             }
         }
 
-        // Find Agg→Core queue length from stored probe info
-        // Look for entry where portId matches this port
-        uint32_t aggToCoreQueue = 0;
-        uint32_t aggSwId = 0;
-
-        for (const auto &entry : m_remoteQueueInfo) {
-            for (const auto &info : entry.second) {
-                if (info.portId == (uint32_t)port) {
-                    aggSwId = entry.first;
-                    aggToCoreQueue = info.queueLength;
-                    break;
-                }
-            }
-            if (aggSwId > 0) break;
+        // Get remote Agg's rx queue length from stored probe info
+        uint32_t remoteRxQueue = 0;
+        auto it = m_remoteRxQueueLen.find(port);
+        if (it != m_remoteRxQueueLen.end()) {
+            remoteRxQueue = it->second;
         }
 
-        // Only consider this path if we found Agg info
-        if (aggSwId > 0) {
-            PathOption opt;
-            opt.port = port;
-            opt.aggSwitchId = aggSwId;
-            // Formula: localQueue * 1.2 + remoteQueue
-            opt.totalQueue = (uint32_t)(torToAggQueue * 1.2) + aggToCoreQueue;
-            pathOptions.push_back(opt);
-        }
+        // Calculate total: local tx queue * 0.8 + remote rx queue
+        uint32_t totalQueue = (uint32_t)(localTxQueue * 0.8) + remoteRxQueue;
+
+        PathOption opt;
+        opt.port = port;
+        opt.totalQueue = totalQueue;
+        pathOptions.push_back(opt);
     }
 
     if (pathOptions.empty()) {
@@ -797,69 +741,51 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
             return a.totalQueue < b.totalQueue;
         });
 
-    // Attach path header to packet with selected path info
-    InflexPathHeader pathHdr;
-    pathHdr.SetDirection(true);  // Uplink
-    pathHdr.AddHop(best->aggSwitchId, best->port, best->totalQueue);
-    // Add Core hop info if available (from probe)
-    // For now, we let Agg decide the next hop
-    p->AddHeader(pathHdr);
-
     return best->port;
 }
 
 int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Core selects path: Core -> Agg -> Tor
-    // Calculate total queue: Core->Agg (local) + Agg->Tor (from stored probe)
+    // Core selects downlink port: Core -> Agg
+    // For each port, calculate: local_tx_queue + remote_rx_queue (stored from probe)
+    // Select port with minimum total
 
-    if (m_remoteQueueInfo.empty()) {
+    if (m_remoteRxQueueLen.empty()) {
+        // No queue info yet, fall back to ECMP
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
     struct PathOption {
         int port;
-        uint32_t aggSwitchId;
         uint32_t totalQueue;
     };
     std::vector<PathOption> pathOptions;
 
     // For each output port (to Agg), calculate total queue length
     for (int port : nexthops) {
-        // Get local Core→Agg queue length for this port
-        uint32_t coreToAggQueue = 0;
+        // Get local Core→Agg tx queue length for this port
+        uint32_t localTxQueue = 0;
         Ptr<NetDevice> dev = GetDevice(port);
         Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
         if (qbb) {
             for (uint32_t q = 0; q < 8; q++) {
-                coreToAggQueue += qbb->GetQueue()->GetNBytes(q);
+                localTxQueue += qbb->GetQueue()->GetNBytes(q);
             }
         }
 
-        // Find Agg→Tor queue length from stored probe info
-        // Look for entry where portId matches this port
-        uint32_t aggToTorQueue = 0;
-        uint32_t aggSwId = 0;
-
-        for (const auto &entry : m_remoteQueueInfo) {
-            for (const auto &info : entry.second) {
-                if (info.portId == (uint32_t)port) {
-                    aggSwId = entry.first;
-                    aggToTorQueue = info.queueLength;
-                    break;
-                }
-            }
-            if (aggSwId > 0) break;
+        // Get remote Agg's rx queue length from stored probe info
+        uint32_t remoteRxQueue = 0;
+        auto it = m_remoteRxQueueLen.find(port);
+        if (it != m_remoteRxQueueLen.end()) {
+            remoteRxQueue = it->second;
         }
 
-        // Only consider this path if we found Agg info
-        if (aggSwId > 0) {
-            PathOption opt;
-            opt.port = port;
-            opt.aggSwitchId = aggSwId;
-            // Formula: localQueue * 1.2 + remoteQueue
-            opt.totalQueue = (uint32_t)(coreToAggQueue * 1.2) + aggToTorQueue;
-            pathOptions.push_back(opt);
-        }
+        // Calculate total: local tx queue * 0.8 + remote rx queue
+        uint32_t totalQueue = (uint32_t)(localTxQueue * 0.8) + remoteRxQueue;
+
+        PathOption opt;
+        opt.port = port;
+        opt.totalQueue = totalQueue;
+        pathOptions.push_back(opt);
     }
 
     if (pathOptions.empty()) {
@@ -871,177 +797,78 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
             return a.totalQueue < b.totalQueue;
         });
 
-    // Attach path header to packet with selected path info
-    InflexPathHeader pathHdr;
-    pathHdr.SetDirection(false);  // Downlink
-    pathHdr.AddHop(best->aggSwitchId, best->port, best->totalQueue);
-    p->AddHeader(pathHdr);
-
     return best->port;
 }
 
 int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Agg switches forward packets based on InflexPathHeader
-    InflexPathHeader pathHdr;
-    if (!p->PeekHeader(pathHdr)) {
-        return DoLbDrill(p, ch, nexthops);
+    // Agg forwards packets based on queue info
+    // Determine direction by checking port numbers:
+    // - Higher ports ( > midPort ) are uplink to Core
+    // - Lower ports ( <= midPort ) are downlink to Tor
+
+    uint32_t midPort = GetNDevices() / 2;
+
+    // Check if forwarding to Core (uplink) or Tor (downlink)
+    bool isUplink = false;
+    for (int port : nexthops) {
+        if (port > (int)midPort) {
+            isUplink = true;
+            break;
+        }
     }
 
-    // Check if path is complete
-    if (pathHdr.IsPathComplete()) {
-        return DoLbDrill(p, ch, nexthops);
+    struct PathOption {
+        int port;
+        uint32_t totalQueue;
+    };
+    std::vector<PathOption> pathOptions;
+
+    // Select the appropriate storage based on direction
+    auto& remoteRxQueue = isUplink ? m_uplinkRxQueueLen : m_downlinkRxQueueLen;
+
+    // Check if we have queue info
+    if (remoteRxQueue.empty()) {
+        return DoLbFlowECMP(p, ch, nexthops);
     }
 
-    // Get next hop from path header (switchId and port)
-    uint32_t nextSwitchId, nextPort;
-    if (!pathHdr.GetNextHop(nextSwitchId, nextPort)) {
-        return DoLbDrill(p, ch, nexthops);
+    // For each output port, calculate total queue length
+    for (int port : nexthops) {
+        // Get local tx queue length for this port
+        uint32_t localTxQueue = 0;
+        Ptr<NetDevice> dev = GetDevice(port);
+        Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
+        if (qbb) {
+            for (uint32_t q = 0; q < 8; q++) {
+                localTxQueue += qbb->GetQueue()->GetNBytes(q);
+            }
+        }
+
+        // Get remote rx queue length from stored probe info
+        uint32_t remoteRxLen = 0;
+        auto it = remoteRxQueue.find(port);
+        if (it != remoteRxQueue.end()) {
+            remoteRxLen = it->second;
+        }
+
+        // Calculate total: local tx queue * 0.8 + remote rx queue
+        uint32_t totalQueue = (uint32_t)(localTxQueue * 0.8) + remoteRxLen;
+
+        PathOption opt;
+        opt.port = port;
+        opt.totalQueue = totalQueue;
+        pathOptions.push_back(opt);
     }
 
-    // Check if next hop is Core (assume Core IDs >= 1000)
-    bool isCoreSwitch = (nextSwitchId >= 1000);
-
-    if (isCoreSwitch) {
-        // Next hop is Core -> compare queue lengths and potentially switch path
-        // Get the path header's recorded queue length for the planned path
-        const std::vector<InflexPathHeader::PathHop>& hops = pathHdr.GetHops();
-        uint32_t currentHopIdx = pathHdr.GetCurrentHop();
-
-        // Get current path's queue length from path header
-        uint32_t currentPathQueue = 0;
-        if (currentHopIdx < hops.size()) {
-            currentPathQueue = hops[currentHopIdx].queueLen;
-        }
-
-        // Find the port with minimum queue length among all available ports
-        uint32_t minQueue = std::numeric_limits<uint32_t>::max();
-        int minQueuePort = -1;
-
-        for (int port : nexthops) {
-            uint32_t queueLen = CalculateInterfaceLoad(port);
-            if (queueLen < minQueue) {
-                minQueue = queueLen;
-                minQueuePort = port;
-            }
-        }
-
-        // Check if we should switch to a different path
-        // Switch if current path queue > min queue * 1.2
-        bool shouldSwitch = (minQueuePort != -1) &&
-                            (currentPathQueue > minQueue * 12 / 10);  // 1.2 = 12/10
-
-        int selectedPort;
-        if (shouldSwitch && minQueuePort != -1) {
-            // Switch to the path with minimum queue
-            selectedPort = minQueuePort;
-            // Update the path header with new port and queue length
-            p->RemoveHeader(pathHdr);
-            // Update current hop with new port and queue
-            if (currentHopIdx < hops.size()) {
-                // Replace the hop with updated info
-                std::vector<InflexPathHeader::PathHop> updatedHops = hops;
-                updatedHops[currentHopIdx].portId = selectedPort;
-                updatedHops[currentHopIdx].queueLen = minQueue;
-                // Clear and rebuild path header
-                pathHdr.Clear();
-                pathHdr.SetDirection(true);  // uplink
-                pathHdr.SetCurrentHop(currentHopIdx);
-                for (const auto& hop : updatedHops) {
-                    pathHdr.AddHop(hop.switchId, hop.portId, hop.queueLen);
-                }
-            }
-            p->AddHeader(pathHdr);
-        } else {
-            // Use the port from path header
-            selectedPort = -1;
-            for (int port : nexthops) {
-                if (port == (int)nextPort) {
-                    selectedPort = port;
-                    break;
-                }
-            }
-            if (selectedPort == -1) {
-                // Planned port not available, use min queue port
-                selectedPort = minQueuePort;
-            }
-            // Increment hop and update header
-            pathHdr.IncrementHop();
-            p->RemoveHeader(pathHdr);
-            p->AddHeader(pathHdr);
-        }
-
-        return selectedPort;
-    } else {
-        // Next hop is ToR in same pod -> apply dynamic switching logic
-        // Get the path header's recorded queue length for the planned path
-        const std::vector<InflexPathHeader::PathHop>& hops = pathHdr.GetHops();
-        uint32_t currentHopIdx = pathHdr.GetCurrentHop();
-
-        // Get current path's queue length from path header
-        uint32_t currentPathQueue = 0;
-        if (currentHopIdx < hops.size()) {
-            currentPathQueue = hops[currentHopIdx].queueLen;
-        }
-
-        // Find the port with minimum queue length among all available ports
-        uint32_t minQueue = std::numeric_limits<uint32_t>::max();
-        int minQueuePort = -1;
-
-        for (int port : nexthops) {
-            uint32_t queueLen = CalculateInterfaceLoad(port);
-            if (queueLen < minQueue) {
-                minQueue = queueLen;
-                minQueuePort = port;
-            }
-        }
-
-        // Check if we should switch to a different path
-        // Switch if current path queue > min queue * 1.2
-        bool shouldSwitch = (minQueuePort != -1) &&
-                            (currentPathQueue > minQueue * 12 / 10);  // 1.2 = 12/10
-
-        int selectedPort;
-        if (shouldSwitch && minQueuePort != -1) {
-            // Switch to the path with minimum queue
-            selectedPort = minQueuePort;
-            // Update the path header with new port and queue length
-            p->RemoveHeader(pathHdr);
-            // Update current hop with new port and queue
-            if (currentHopIdx < hops.size()) {
-                // Replace the hop with updated info
-                std::vector<InflexPathHeader::PathHop> updatedHops = hops;
-                updatedHops[currentHopIdx].portId = selectedPort;
-                updatedHops[currentHopIdx].queueLen = minQueue;
-                // Clear and rebuild path header
-                pathHdr.Clear();
-                pathHdr.SetDirection(false);  // downlink
-                pathHdr.SetCurrentHop(currentHopIdx);
-                for (const auto& hop : updatedHops) {
-                    pathHdr.AddHop(hop.switchId, hop.portId, hop.queueLen);
-                }
-            }
-            p->AddHeader(pathHdr);
-        } else {
-            // Use the port from path header
-            selectedPort = -1;
-            for (int port : nexthops) {
-                if (port == (int)nextPort) {
-                    selectedPort = port;
-                    break;
-                }
-            }
-            if (selectedPort == -1) {
-                // Planned port not available, use min queue port
-                selectedPort = minQueuePort;
-            }
-            // Increment hop and update header
-            pathHdr.IncrementHop();
-            p->RemoveHeader(pathHdr);
-            p->AddHeader(pathHdr);
-        }
-
-        return selectedPort;
+    if (pathOptions.empty()) {
+        return DoLbFlowECMP(p, ch, nexthops);
     }
+
+    auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
+        [](const PathOption& a, const PathOption& b) {
+            return a.totalQueue < b.totalQueue;
+        });
+
+    return best->port;
 }
 
 int SwitchNode::GetPortToSwitch(uint32_t switchId) {

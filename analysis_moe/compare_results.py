@@ -81,24 +81,33 @@ def calculate_percentiles(data) -> Tuple[float, float]:
 
 
 def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int]:
-    """Read FCT file and return avg, p50, p99, stddev in microseconds, and timeout stats."""
+    """Read FCT file and return avg, p50, p99, stddev in microseconds, and timeout stats.
+    Only includes expert flows (8KB flows), excludes background flows (8MB).
+    """
     fct_values = []
     timeout_counts = []
+    EXPERT_FLOW_SIZE = 8192  # 8KB
 
     with open(fct_path, 'r') as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) >= 9:
-                # Column 7 is FCT in nanoseconds
-                fct_ns = float(parts[6])
-                fct_values.append(fct_ns)
-                # Column 9 is timeout count
-                timeout_counts.append(int(parts[8]))
+                # Column 5 is flow size in bytes
+                flow_size = int(parts[4])
+                # Only include expert flows (8KB), exclude background flows (8MB)
+                if flow_size == EXPERT_FLOW_SIZE:
+                    # Column 7 is FCT in nanoseconds
+                    fct_ns = float(parts[6])
+                    fct_values.append(fct_ns)
+                    # Column 9 is timeout count
+                    timeout_counts.append(int(parts[8]))
             elif len(parts) >= 7:
                 # Old format without timeout count
-                fct_ns = float(parts[6])
-                fct_values.append(fct_ns)
-                timeout_counts.append(0)
+                flow_size = int(parts[4])
+                if flow_size == EXPERT_FLOW_SIZE:
+                    fct_ns = float(parts[6])
+                    fct_values.append(fct_ns)
+                    timeout_counts.append(0)
 
     if not fct_values:
         return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0

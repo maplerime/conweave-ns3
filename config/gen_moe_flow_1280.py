@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate MoE flow file for 1280-node topology (320 groups x 4 nodes)
-Each group of 4 nodes acts like a multi-NIC host
-One-to-one mapping: 4 nodes in expert group map to 4 nodes in receiver group
+Generate MoE flow file for 1280-node 5-pod topology
+- 5 pods, 256 hosts per pod, 1280 total hosts
+- Each group has 4 nodes (within the same pod)
+- Total: 320 groups (64 groups per pod)
+- Expert groups: 256 groups (distributed across 5 pods, ~51-52 per pod)
+- Receiver groups: 8 groups (from non-expert groups, distributed across 5 pods)
+- Remaining groups: 56 groups (224 nodes) for background flows
+
+Each expert flow source maps to one receiver flow destination (one-to-one).
 """
 
 import random
@@ -10,16 +16,20 @@ import argparse
 
 # Parse arguments
 parser = argparse.ArgumentParser(description='Generate MoE flow file with hybrid pg')
-parser.add_argument('--fecmp_bg', type=int, default=0,
-                    help='Number of 8MB background flows using pg=1 (fecmp), no other background flows')
+parser.add_argument('--fecmp_bg', type=int, default=None,
+                    help='Number of 8MB background flows (0, 64, 128, 192). If not specified, generates all 4 files.')
 args = parser.parse_args()
 
-FECMP_BG_COUNT = args.fecmp_bg  # Number of 8MB background flows with pg=1
+FECMP_BG_VALUES = [0, 64, 128, 192] if args.fecmp_bg is None else [args.fecmp_bg]
 
 # Parameters
 TOTAL_NODES = 1280
-GROUP_SIZE = 4
-NUM_GROUPS = TOTAL_NODES // GROUP_SIZE  # 320 groups
+NUM_PODS = 5
+NODES_PER_POD = TOTAL_NODES // NUM_PODS  # 256 hosts per pod
+
+GROUP_SIZE = 4  # Each group has 4 nodes (within same pod)
+GROUPS_PER_POD = NODES_PER_POD // GROUP_SIZE  # 64 groups per pod
+NUM_GROUPS = GROUPS_PER_POD * NUM_PODS  # 320 groups total
 
 EXPERT_GROUPS = 256      # Number of sender groups
 RECEIVER_GROUPS = 8      # Number of receiver groups
@@ -27,85 +37,118 @@ ROUNDS = 8               # Number of MoE rounds
 MOE_FLOW_SIZE = 8192     # 8KB per flow
 BG_FLOW_SIZE = 8 * 1024 * 1024  # 8MB per background flow
 
-BG_SENDERS = 192         # Number of background flow senders
-
-# Network parameters for timing
-LINK_RATE_Gbps = 100
-NIC_BANDWIDTH_Gbps = LINK_RATE_Gbps  # 100Gbps per node
-# Each group has 4 NICs, so 400Gbps aggregate bandwidth
-
 # Timing
 BG_START_TIME = 2.0      # Background flows start at 2.0s
 ROUND_INTERVAL_US = 100  # 100us between rounds
-
-# Calculate round completion time
-# Each expert group sends 4 flows to each receiver group (one-to-one)
-# Each receiver group gets: 256 expert groups x 4 flows = 1024 flows = 8MB
-# At 400Gbps per group (4x100Gbps), receiving 8MB takes: 8MB / 50GB/s = 0.16ms = 160us
-# Add margin: round_time = 200us
 ROUND_TIME_US = 200      # Time for each round to complete
 
 random.seed(42)
 
-# Generate group IDs
+# Helper: get group ID from node ID
+def node_to_group(node_id):
+    """Convert node ID to group ID"""
+    pod = node_id // NODES_PER_POD
+    node_in_pod = node_id % NODES_PER_POD
+    group_in_pod = node_in_pod // GROUP_SIZE
+    return pod * GROUPS_PER_POD + group_in_pod
+
+# Helper: get all nodes in a group
+def get_group_nodes(group_id):
+    """Return list of 4 node IDs for the given group"""
+    pod = group_id // GROUPS_PER_POD
+    group_in_pod = group_id % GROUPS_PER_POD
+    start_node = pod * NODES_PER_POD + group_in_pod * GROUP_SIZE
+    return [start_node + i for i in range(GROUP_SIZE)]
+
+# Select expert groups distributed across pods
 all_groups = list(range(NUM_GROUPS))
+expert_group_ids = []
 
-# Select expert sender groups and receiver groups
-expert_group_ids = random.sample(all_groups, EXPERT_GROUPS)
-remaining_groups = [g for g in all_groups if g not in expert_group_ids]
-receiver_group_ids = random.sample(remaining_groups, RECEIVER_GROUPS)
+# Distribute expert groups evenly across pods
+expert_per_pod = EXPERT_GROUPS // NUM_PODS  # 51 per pod
+expert_remainder = EXPERT_GROUPS % NUM_PODS  # 1 extra group
 
-# Convert groups to node ID ranges
+for pod in range(NUM_PODS):
+    pod_groups = [g for g in all_groups if g // GROUPS_PER_POD == pod]
+    # Select expert groups for this pod
+    num_expert = expert_per_pod + (1 if pod < expert_remainder else 0)
+    pod_expert = random.sample(pod_groups, num_expert)
+    expert_group_ids.extend(pod_expert)
+
+expert_group_ids = sorted(expert_group_ids)
+remaining_groups = sorted([g for g in all_groups if g not in expert_group_ids])
+
+# Select receiver groups distributed across pods
+receiver_group_ids = []
+receivers_per_pod = RECEIVER_GROUPS // NUM_PODS  # 1 per pod
+receiver_remainder = RECEIVER_GROUPS % NUM_PODS  # 3 extra groups
+
+for pod in range(NUM_PODS):
+    pod_remaining = [g for g in remaining_groups if g // GROUPS_PER_POD == pod]
+    if not pod_remaining:
+        continue
+    # Select receiver groups for this pod
+    num_receivers = receivers_per_pod + (1 if pod < receiver_remainder else 0)
+    num_receivers = min(num_receivers, len(pod_remaining))
+    pod_receivers = random.sample(pod_remaining, num_receivers)
+    receiver_group_ids.extend(pod_receivers)
+
+receiver_group_ids = sorted(receiver_group_ids)
+
+# Remove receiver groups from remaining groups
+remaining_for_bg = sorted([g for g in remaining_groups if g not in receiver_group_ids])
+
+print(f"Topology: {NUM_PODS} pods, {NODES_PER_POD} hosts per pod, {TOTAL_NODES} total hosts")
+print(f"Group structure: {NUM_GROUPS} groups total ({GROUPS_PER_POD} groups per pod), {GROUP_SIZE} nodes per group")
+print()
+print(f"Expert Groups: {len(expert_group_ids)} groups")
+
+# Show pod distribution for expert groups
+expert_pod_dist = {}
+for pod in range(NUM_PODS):
+    pod_expert = [g for g in expert_group_ids if g // GROUPS_PER_POD == pod]
+    expert_pod_dist[pod] = len(pod_expert)
+print(f"  Distribution per pod: {expert_pod_dist}")
+
+print(f"Receiver Groups: {receiver_group_ids}")
+receiver_pod_dist = {}
+for pod in range(NUM_PODS):
+    pod_receivers = [g for g in receiver_group_ids if g // GROUPS_PER_POD == pod]
+    receiver_pod_dist[pod] = len(pod_receivers) if pod_receivers else 0
+print(f"  Distribution per pod: {receiver_pod_dist}")
+
+print(f"Remaining Groups (for background): {len(remaining_for_bg)} groups")
+bg_pod_dist = {}
+for pod in range(NUM_PODS):
+    pod_bg = [g for g in remaining_for_bg if g // GROUPS_PER_POD == pod]
+    bg_pod_dist[pod] = len(pod_bg)
+print(f"  Distribution per pod: {bg_pod_dist}")
+print()
+
+# Convert groups to node ID lists
 expert_groups_nodes = []
-for g in sorted(expert_group_ids):
-    nodes = [g * GROUP_SIZE + i for i in range(GROUP_SIZE)]
-    expert_groups_nodes.append(nodes)
+for g in expert_group_ids:
+    expert_groups_nodes.append(get_group_nodes(g))
 
 receiver_groups_nodes = []
-for g in sorted(receiver_group_ids):
-    nodes = [g * GROUP_SIZE + i for i in range(GROUP_SIZE)]
-    receiver_groups_nodes.append(nodes)
+for g in receiver_group_ids:
+    receiver_groups_nodes.append(get_group_nodes(g))
+
+# Background nodes: from remaining groups only
+bg_nodes = []
+for g in remaining_for_bg:
+    bg_nodes.extend(get_group_nodes(g))
 
 print(f"Total nodes: {TOTAL_NODES}")
-print(f"Groups: {NUM_GROUPS} (4 nodes per group)")
-print(f"Expert sender groups: {EXPERT_GROUPS}")
-print(f"Receiver groups: {RECEIVER_GROUPS} (random 2 per round)")
-print(f"Flows per expert node: 2 (one to each receiver group)")
+print(f"Expert sender nodes: {len(expert_group_ids) * GROUP_SIZE} (256 groups x 4)")
+print(f"Receiver nodes: {len(receiver_group_ids) * GROUP_SIZE} (8 groups x 4)")
+print(f"Background-available nodes: {len(bg_nodes)} ({len(remaining_for_bg)} groups x 4)")
+print(f"Flows per expert node: 2 (one to each receiver group per round)")
 print(f"Total flows per round: {EXPERT_GROUPS * GROUP_SIZE * 2}")
-print(f"Fecmp background flows: {FECMP_BG_COUNT}")
+print()
 
-# Background: remaining hosts (256 nodes from 64 groups)
-remaining_nodes = []
-for g in remaining_groups:
-    if g not in receiver_group_ids:
-        remaining_nodes.extend([g * GROUP_SIZE + i for i in range(GROUP_SIZE)])
-
-# Number of background senders equals FECMP_BG_COUNT (no extra flows)
-if FECMP_BG_COUNT > 0:
-    bg_sender_node_ids = random.sample(remaining_nodes, FECMP_BG_COUNT)
-else:
-    bg_sender_node_ids = []
-
-# Background receivers: any node not in expert senders
-all_expert_nodes = []
-for g in expert_group_ids:
-    all_expert_nodes.extend([g * GROUP_SIZE + i for i in range(GROUP_SIZE)])
-bg_receiver_candidates = [n for n in range(TOTAL_NODES) if n not in all_expert_nodes]
-
-print(f"Background senders: {len(bg_sender_node_ids)}")
-
+# Generate MoE flows (SAME for all files)
 moe_lines = []
-bg_lines = []
-
-# Generate background flows (placed at beginning of file)
-# All background flows use pg=1 (fecmp), number of flows = FECMP_BG_COUNT
-for idx, src in enumerate(bg_sender_node_ids):
-    dst = random.choice(bg_receiver_candidates)
-    pg = 1  # fecmp only
-    bg_lines.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
-
-# Generate MoE flows with proper timing
-# All rounds start at the same time
 moe_start_time = BG_START_TIME + 0.001  # Start 1ms after background
 
 for round_id in range(ROUNDS):
@@ -119,50 +162,90 @@ for round_id in range(ROUNDS):
             for i in range(GROUP_SIZE):
                 src = expert_group[i]
                 dst = receiver_group[i]
+                # Ensure src != dst
+                if src == dst:
+                    continue  # Skip self-flow
                 pg = 2  # drill/inflex
                 moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f}\n")
 
-# Print timing summary
-print(f"\nTiming summary:")
-print(f"Background flows start: {BG_START_TIME:.6f}s")
-print(f"MoE flows all start: {moe_start_time:.6f}s")
-
-# Statistics
 total_moe_flows = len(moe_lines)
-total_bg_flows = len(bg_lines)
 moe_traffic = total_moe_flows * MOE_FLOW_SIZE
-bg_traffic = total_bg_flows * BG_FLOW_SIZE
-total_traffic = moe_traffic + bg_traffic
 
-# Count pg values
-bg_pg_1 = sum(1 for line in bg_lines if line.split()[2] == "1")
-moe_pg_2 = sum(1 for line in moe_lines if line.split()[2] == "2")
-
-print(f"\nFlow statistics:")
-if total_bg_flows > 0:
-    print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
-    print(f"  - pg=1 (fecmp): {bg_pg_1}")
 print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
 print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
-print(f"  - pg=2 (drill): {moe_pg_2}")
-print(f"Total traffic: {total_traffic / 1024 / 1024:.1f} MB")
-print(f"MoE ratio: {moe_traffic / total_traffic * 100:.1f}%")
-print(f"Background ratio: {bg_traffic / total_traffic * 100:.1f}%")
+print()
 
-# Write flow file - background flows first, then MoE flows
-if FECMP_BG_COUNT > 0:
-    output_file = f"moe_1280group_256to8_8round_8KB_hybrid_{FECMP_BG_COUNT}fecmp.txt"
-else:
-    output_file = "moe_1280group_256to8_8round_8KB.txt"
+# Generate files for each fecmp_bg value
+for FECMP_BG_COUNT in FECMP_BG_VALUES:
+    print(f"{'='*60}")
+    print(f"Generating file with {FECMP_BG_COUNT} background flows")
+    print(f"{'='*60}")
 
-with open(output_file, "w") as f:
-    f.write(f"{total_moe_flows + total_bg_flows}\n")
-    # Background flows first
-    for line in bg_lines:
-        f.write(line)
-    # MoE flows after
-    for line in moe_lines:
-        f.write(line)
+    bg_lines = []
 
-print(f"\nFlow file written to: {output_file}")
-print(f"Order: Background flows (first {total_bg_flows} lines), then MoE flows ({total_moe_flows} lines)")
+    # Background flows: both sender and receiver from remaining nodes only
+    if FECMP_BG_COUNT > 0:
+        # Select senders from background nodes only
+        if FECMP_BG_COUNT <= len(bg_nodes):
+            bg_sender_node_ids = random.sample(bg_nodes, FECMP_BG_COUNT)
+        else:
+            # If need more senders than available, allow reuse
+            bg_sender_node_ids = random.choices(bg_nodes, k=FECMP_BG_COUNT)
+    else:
+        bg_sender_node_ids = []
+
+    # Background receivers: also from background nodes only
+    bg_receiver_candidates = bg_nodes
+
+    print(f"Background senders: {len(bg_sender_node_ids)}")
+    print(f"Background receiver candidates: {len(bg_receiver_candidates)}")
+
+    # Generate background flows (placed at beginning of file)
+    # All background flows use pg=1 (fecmp), number of flows = FECMP_BG_COUNT
+    for idx, src in enumerate(bg_sender_node_ids):
+        # Select destination from background nodes, different from source
+        dst_candidates = [n for n in bg_receiver_candidates if n != src]
+        if not dst_candidates:
+            continue  # Skip if no valid destination
+        dst = random.choice(dst_candidates)
+        pg = 1  # fecmp only
+        bg_lines.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
+
+    # Statistics
+    total_bg_flows = len(bg_lines)
+    bg_traffic = total_bg_flows * BG_FLOW_SIZE
+    total_traffic = moe_traffic + bg_traffic
+
+    # Count pg values
+    bg_pg_1 = sum(1 for line in bg_lines if line.split()[2] == "1")
+    moe_pg_2 = sum(1 for line in moe_lines if line.split()[2] == "2")
+
+    print(f"\nFlow statistics:")
+    if total_bg_flows > 0:
+        print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
+        print(f"  - pg=1 (fecmp): {bg_pg_1}")
+    print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
+    print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
+    print(f"  - pg=2 (drill): {moe_pg_2}")
+    print(f"Total traffic: {total_traffic / 1024 / 1024:.1f} MB")
+    print(f"MoE ratio: {moe_traffic / total_traffic * 100:.1f}%")
+    print(f"Background ratio: {bg_traffic / total_traffic * 100:.1f}%")
+
+    # Write flow file - background flows first, then MoE flows
+    if FECMP_BG_COUNT > 0:
+        output_file = f"moe_1280group_256to8_8round_8KB_hybrid_{FECMP_BG_COUNT}fecmp.txt"
+    else:
+        output_file = "moe_1280group_256to8_8round_8KB.txt"
+
+    with open(output_file, "w") as f:
+        f.write(f"{total_moe_flows + total_bg_flows}\n")
+        # Background flows first
+        for line in bg_lines:
+            f.write(line)
+        # MoE flows after
+        for line in moe_lines:
+            f.write(line)
+
+    print(f"\nFlow file written to: {output_file}")
+    print(f"Order: Background flows (first {total_bg_flows} lines), then MoE flows ({total_moe_flows} lines)")
+    print()

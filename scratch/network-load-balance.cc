@@ -1596,14 +1596,16 @@ int main(int argc, char *argv[]) {
         }
         std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
 
-        // Start queue monitoring probe generation on Core switches
-        std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
-        for (uint32_t i = 0; i < n.GetN(); i++) {
-            Ptr<Node> node = n.Get(i);
-            if (node->GetNodeType() == 1) {
-                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
-                if (sw->GetSwitchType() == SWITCH_TYPE_CORE) {
-                    sw->StartProbeGeneration();
+        // Start queue monitoring probe generation on Core switches (only for Inflex mode)
+        if (Settings::lb_mode == 12) {
+            std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
+            for (uint32_t i = 0; i < n.GetN(); i++) {
+                Ptr<Node> node = n.Get(i);
+                if (node->GetNodeType() == 1) {
+                    Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                    if (sw->GetSwitchType() == SWITCH_TYPE_CORE) {
+                        sw->StartProbeGeneration();
+                    }
                 }
             }
         }

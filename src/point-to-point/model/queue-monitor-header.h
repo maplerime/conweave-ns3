@@ -92,11 +92,16 @@ public:
     // Get all queue info
     const std::vector<QueueInfo>& GetAllQueueInfo() const { return m_queueInfo; }
 
+    // Set/Get sender's receiving queue length
+    void SetSenderRxQueueLen(uint32_t len) { m_senderRxQueueLen = len; }
+    uint32_t GetSenderRxQueueLen() const { return m_senderRxQueueLen; }
+
     // Clear
-    void Clear() { m_queueInfo.clear(); }
+    void Clear() { m_queueInfo.clear(); m_senderRxQueueLen = 0; }
 
 private:
     std::vector<QueueInfo> m_queueInfo;
+    uint32_t m_senderRxQueueLen;  // Receiving queue length at the sender's port
 };
 
 } // namespace ns3

@@ -84,6 +84,16 @@ class SwitchNode : public Node {
     // Map: switch_id -> queue info from that switch
     std::map<uint32_t, std::vector<RemoteQueueInfo>> m_remoteQueueInfo;
 
+    // Receiving queue length from remote switches
+    // Map: receiving_port -> rx_queue_length on remote end
+    std::map<uint32_t, uint32_t> m_remoteRxQueueLen;  // For Tor and Core
+
+    // For Aggregation switch: separate uplink and downlink storage
+    // Uplink: from Core (receiving_port -> rx_queue_length from Core)
+    std::map<uint32_t, uint32_t> m_uplinkRxQueueLen;
+    // Downlink: from Tor (receiving_port -> rx_queue_length from Tor)
+    std::map<uint32_t, uint32_t> m_downlinkRxQueueLen;
+
     // Probe generation
     EventId m_probeEvent;
     uint64_t m_probeInterval;

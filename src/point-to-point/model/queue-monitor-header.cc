@@ -144,7 +144,7 @@ InflexPathHeader::GetNextHop(uint32_t& switchId, uint32_t& portId) const {
 
 /******************** QueueMonitorHeader ********************/
 
-QueueMonitorHeader::QueueMonitorHeader() {
+QueueMonitorHeader::QueueMonitorHeader() : m_senderRxQueueLen(0) {
 }
 
 TypeId
@@ -163,14 +163,16 @@ QueueMonitorHeader::GetInstanceTypeId() const {
 
 uint32_t
 QueueMonitorHeader::GetSerializedSize() const {
-    // Each QueueInfo: switchId(4) + portId(4) + queueLength(4) = 12 bytes
-    // Plus count of entries (4 bytes)
-    return 4 + m_queueInfo.size() * 12;
+    // senderRxQueueLen(4) + count(4) + each QueueInfo(12 bytes)
+    return 4 + 4 + m_queueInfo.size() * 12;
 }
 
 void
 QueueMonitorHeader::Serialize(Buffer::Iterator start) const {
     Buffer::Iterator i = start;
+
+    // Write sender's receiving queue length
+    i.WriteU32(m_senderRxQueueLen);
 
     // Write number of entries
     uint32_t count = m_queueInfo.size();
@@ -187,6 +189,9 @@ QueueMonitorHeader::Serialize(Buffer::Iterator start) const {
 uint32_t
 QueueMonitorHeader::Deserialize(Buffer::Iterator start) {
     Buffer::Iterator i = start;
+
+    // Read sender's receiving queue length
+    m_senderRxQueueLen = i.ReadU32();
 
     // Read number of entries
     uint32_t count = i.ReadU32();

@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
 Generate MoE flow file for 1280-node 5-pod topology
-- 5 pods, 256 hosts per pod, 1280 total hosts
-- Each group has 4 nodes (within the same pod)
-- Total: 320 groups (64 groups per pod)
-- Expert groups: 256 groups (distributed across 5 pods, ~51-52 per pod)
-- Receiver groups: 8 groups (from non-expert groups, distributed across 5 pods)
-- Remaining groups: 56 groups (224 nodes) for background flows
+- All flows use pg=3
+- tag=1 for background flows, tag=2 for expert flows
 
-Each expert flow source maps to one receiver flow destination (one-to-one).
+Each group of 4 nodes acts like a multi-NIC host
 """
 
 import random
@@ -36,6 +32,11 @@ RECEIVER_GROUPS = 8      # Number of receiver groups
 ROUNDS = 8               # Number of MoE rounds
 MOE_FLOW_SIZE = 8192     # 8KB per flow
 BG_FLOW_SIZE = 8 * 1024 * 1024  # 8MB per background flow
+
+# New parameters
+PG_VALUE = 3             # All flows use pg=3
+TAG_EXPERT = 2           # Expert flow tag
+TAG_BACKGROUND = 1       # Background flow tag
 
 # Timing
 BG_START_TIME = 2.0      # Background flows start at 2.0s
@@ -101,6 +102,8 @@ remaining_for_bg = sorted([g for g in remaining_groups if g not in receiver_grou
 print(f"Topology: {NUM_PODS} pods, {NODES_PER_POD} hosts per pod, {TOTAL_NODES} total hosts")
 print(f"Group structure: {NUM_GROUPS} groups total ({GROUPS_PER_POD} groups per pod), {GROUP_SIZE} nodes per group")
 print()
+print(f"All flows use pg={PG_VALUE}, tag={TAG_EXPERT}(expert) or {TAG_BACKGROUND}(background)")
+print()
 print(f"Expert Groups: {len(expert_group_ids)} groups")
 
 # Show pod distribution for expert groups
@@ -165,8 +168,9 @@ for round_id in range(ROUNDS):
                 # Ensure src != dst
                 if src == dst:
                     continue  # Skip self-flow
-                pg = 2  # drill/inflex
-                moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f}\n")
+                pg = PG_VALUE  # All flows use pg=3
+                tag = TAG_EXPERT  # Expert flow tag
+                moe_lines.append(f"{src} {dst} {pg} {tag} {MOE_FLOW_SIZE} {moe_start_time:.9f}\n")
 
 total_moe_flows = len(moe_lines)
 moe_traffic = total_moe_flows * MOE_FLOW_SIZE
@@ -175,58 +179,57 @@ print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
 print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
 print()
 
+# Generate background flow pool ONCE (192 flows maximum)
+# This ensures cumulative inclusion: 64 -> 128 -> 192
+MAX_BG_FLOWS = 192
+bg_flow_pool = []
+
+# Generate 192 background flows from remaining nodes
+bg_sender_pool = random.sample(bg_nodes, MAX_BG_FLOWS)
+
+for idx, src in enumerate(bg_sender_pool):
+    # Select destination from background nodes, different from source
+    dst_candidates = [n for n in bg_nodes if n != src]
+    if not dst_candidates:
+        continue
+    dst = random.choice(dst_candidates)
+    pg = PG_VALUE  # All flows use pg=3
+    tag = TAG_BACKGROUND  # Background flow tag
+    bg_flow_pool.append(f"{src} {dst} {pg} {tag} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
+
+print(f"Background flow pool generated: {len(bg_flow_pool)} flows")
+print(f"  - First 64 flows will be used for fecmp=64")
+print(f"  - First 128 flows will be used for fecmp=128")
+print(f"  - All 192 flows will be used for fecmp=192")
+print()
+
 # Generate files for each fecmp_bg value
 for FECMP_BG_COUNT in FECMP_BG_VALUES:
     print(f"{'='*60}")
     print(f"Generating file with {FECMP_BG_COUNT} background flows")
     print(f"{'='*60}")
 
-    bg_lines = []
-
-    # Background flows: both sender and receiver from remaining nodes only
-    if FECMP_BG_COUNT > 0:
-        # Select senders from background nodes only
-        if FECMP_BG_COUNT <= len(bg_nodes):
-            bg_sender_node_ids = random.sample(bg_nodes, FECMP_BG_COUNT)
-        else:
-            # If need more senders than available, allow reuse
-            bg_sender_node_ids = random.choices(bg_nodes, k=FECMP_BG_COUNT)
-    else:
-        bg_sender_node_ids = []
-
-    # Background receivers: also from background nodes only
-    bg_receiver_candidates = bg_nodes
-
-    print(f"Background senders: {len(bg_sender_node_ids)}")
-    print(f"Background receiver candidates: {len(bg_receiver_candidates)}")
-
-    # Generate background flows (placed at beginning of file)
-    # All background flows use pg=1 (fecmp), number of flows = FECMP_BG_COUNT
-    for idx, src in enumerate(bg_sender_node_ids):
-        # Select destination from background nodes, different from source
-        dst_candidates = [n for n in bg_receiver_candidates if n != src]
-        if not dst_candidates:
-            continue  # Skip if no valid destination
-        dst = random.choice(dst_candidates)
-        pg = 1  # fecmp only
-        bg_lines.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
+    # Use cumulative background flows from pool
+    bg_lines = bg_flow_pool[:FECMP_BG_COUNT]
 
     # Statistics
     total_bg_flows = len(bg_lines)
     bg_traffic = total_bg_flows * BG_FLOW_SIZE
     total_traffic = moe_traffic + bg_traffic
 
-    # Count pg values
-    bg_pg_1 = sum(1 for line in bg_lines if line.split()[2] == "1")
-    moe_pg_2 = sum(1 for line in moe_lines if line.split()[2] == "2")
+    # Count pg values and tag values
+    bg_pg_3 = sum(1 for line in bg_lines if int(line.split()[2]) == PG_VALUE)
+    bg_tag_1 = sum(1 for line in bg_lines if int(line.split()[3]) == TAG_BACKGROUND)
+    moe_pg_3 = sum(1 for line in moe_lines if int(line.split()[2]) == PG_VALUE)
+    moe_tag_2 = sum(1 for line in moe_lines if int(line.split()[3]) == TAG_EXPERT)
 
     print(f"\nFlow statistics:")
     if total_bg_flows > 0:
         print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
-        print(f"  - pg=1 (fecmp): {bg_pg_1}")
+        print(f"  - pg={PG_VALUE}: {bg_pg_3}, tag={TAG_BACKGROUND}: {bg_tag_1}")
     print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
     print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
-    print(f"  - pg=2 (drill): {moe_pg_2}")
+    print(f"  - pg={PG_VALUE}: {moe_pg_3}, tag={TAG_EXPERT}: {moe_tag_2}")
     print(f"Total traffic: {total_traffic / 1024 / 1024:.1f} MB")
     print(f"MoE ratio: {moe_traffic / total_traffic * 100:.1f}%")
     print(f"Background ratio: {bg_traffic / total_traffic * 100:.1f}%")

@@ -75,15 +75,6 @@ class SwitchNode : public Node {
     std::unordered_set<uint32_t> m_isToR_hostIP;  // host's IP connected to this ToR
 
     /*----- Queue Monitoring -----*/
-    // Stored queue info from probes (what downstream switches see from us)
-    struct RemoteQueueInfo {
-        uint32_t switchId;
-        uint32_t portId;
-        uint32_t queueLength;
-    };
-    // Map: switch_id -> queue info from that switch
-    std::map<uint32_t, std::vector<RemoteQueueInfo>> m_remoteQueueInfo;
-
     // Receiving queue length from remote switches
     // Map: receiving_port -> rx_queue_length on remote end
     std::map<uint32_t, uint32_t> m_remoteRxQueueLen;  // For Tor and Core
@@ -94,6 +85,18 @@ class SwitchNode : public Node {
     // Downlink: from Tor (receiving_port -> rx_queue_length from Tor)
     std::map<uint32_t, uint32_t> m_downlinkRxQueueLen;
 
+    // Remote PFC port count storage (received from probes)
+    // For Tor and Core: receiving_port -> PFC port count at remote end
+    std::map<uint32_t, uint32_t> m_remotePfcPortCount;
+    // For Aggregation: separate uplink and downlink storage
+    std::map<uint32_t, uint32_t> m_uplinkPfcPortCount;   // from Core
+    std::map<uint32_t, uint32_t> m_downlinkPfcPortCount; // from Tor
+
+    /*----- PFC Port Tracking -----*/
+    // Track which ports currently have at least one queue in PFC pause state
+    std::unordered_set<uint32_t> m_pfc_ports;  // Set of ports in PFC pause state
+    uint32_t m_pfc_port_count;                  // Current number of ports in PFC state
+
     // Probe generation
     EventId m_probeEvent;
     uint64_t m_probeInterval;
@@ -103,7 +106,6 @@ class SwitchNode : public Node {
     void StartProbeGeneration();
     void GenerateAndSendProbe();
     void ProcessProbePacket(Ptr<Packet> p, uint32_t inDev);
-    void AttachQueueMonitorToPacket(Ptr<Packet> p, uint32_t outDev);
 
     /*----- Inflex Path Selection -----*/
     // Select uplink path (ToR -> Agg -> Core) based on queue info
@@ -125,6 +127,9 @@ class SwitchNode : public Node {
     bool SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet, CustomHeader &ch);
     void SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p);
     uint64_t GetTxBytesOutDev(uint32_t outdev);
+
+    /*----- PFC Port Tracking -----*/
+    uint32_t GetPfcPortCount() const { return m_pfc_port_count; }
 };
 
 } /* namespace ns3 */

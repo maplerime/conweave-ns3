@@ -144,7 +144,7 @@ InflexPathHeader::GetNextHop(uint32_t& switchId, uint32_t& portId) const {
 
 /******************** QueueMonitorHeader ********************/
 
-QueueMonitorHeader::QueueMonitorHeader() : m_senderRxQueueLen(0) {
+QueueMonitorHeader::QueueMonitorHeader() : m_senderRxQueueLen(0), m_senderPfcPortCount(0) {
 }
 
 TypeId
@@ -163,8 +163,8 @@ QueueMonitorHeader::GetInstanceTypeId() const {
 
 uint32_t
 QueueMonitorHeader::GetSerializedSize() const {
-    // senderRxQueueLen(4) + count(4) + each QueueInfo(12 bytes)
-    return 4 + 4 + m_queueInfo.size() * 12;
+    // senderRxQueueLen(4) + senderPfcPortCount(4)
+    return 4 + 4;
 }
 
 void
@@ -173,17 +173,8 @@ QueueMonitorHeader::Serialize(Buffer::Iterator start) const {
 
     // Write sender's receiving queue length
     i.WriteU32(m_senderRxQueueLen);
-
-    // Write number of entries
-    uint32_t count = m_queueInfo.size();
-    i.WriteU32(count);
-
-    // Write each QueueInfo
-    for (const auto &info : m_queueInfo) {
-        i.WriteU32(info.switchId);
-        i.WriteU32(info.portId);
-        i.WriteU32(info.queueLength);
-    }
+    // Write sender's PFC port count
+    i.WriteU32(m_senderPfcPortCount);
 }
 
 uint32_t
@@ -192,43 +183,16 @@ QueueMonitorHeader::Deserialize(Buffer::Iterator start) {
 
     // Read sender's receiving queue length
     m_senderRxQueueLen = i.ReadU32();
-
-    // Read number of entries
-    uint32_t count = i.ReadU32();
-    m_queueInfo.clear();
-
-    // Read each QueueInfo
-    for (uint32_t j = 0; j < count; j++) {
-        QueueInfo info;
-        info.switchId = i.ReadU32();
-        info.portId = i.ReadU32();
-        info.queueLength = i.ReadU32();
-        m_queueInfo.push_back(info);
-    }
+    // Read sender's PFC port count
+    m_senderPfcPortCount = i.ReadU32();
 
     return GetSerializedSize();
 }
 
 void
 QueueMonitorHeader::Print(std::ostream &os) const {
-    os << "QueueMonitorHeader[";
-    for (size_t i = 0; i < m_queueInfo.size(); i++) {
-        const auto &info = m_queueInfo[i];
-        os << "SW" << info.switchId << ":P" << info.portId << "=" << info.queueLength;
-        if (i < m_queueInfo.size() - 1) {
-            os << ", ";
-        }
-    }
-    os << "]";
-}
-
-void
-QueueMonitorHeader::AddQueueInfo(uint32_t switchId, uint32_t portId, uint32_t queueLength) {
-    QueueInfo info;
-    info.switchId = switchId;
-    info.portId = portId;
-    info.queueLength = queueLength;
-    m_queueInfo.push_back(info);
+    os << "QueueMonitorHeader[RxQueue=" << m_senderRxQueueLen
+       << ", PfcPorts=" << m_senderPfcPortCount << "]";
 }
 
 } // namespace ns3

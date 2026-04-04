@@ -3,7 +3,6 @@
 
 #include "ns3/header.h"
 #include "ns3/tag.h"
-#include <vector>
 
 namespace ns3 {
 
@@ -69,15 +68,9 @@ private:
     std::vector<PathHop> m_hops;        // Path hops
 };
 
+// Probe packet header - carries sender's queue and PFC information
 class QueueMonitorHeader : public Header {
 public:
-    // Queue information from one switch
-    struct QueueInfo {
-        uint32_t switchId;     // Switch ID
-        uint32_t portId;       // Port ID
-        uint32_t queueLength;  // Queue length in bytes
-    };
-
     QueueMonitorHeader();
     static TypeId GetTypeId();
     virtual TypeId GetInstanceTypeId() const override;
@@ -86,22 +79,17 @@ public:
     virtual uint32_t Deserialize(Buffer::Iterator start) override;
     virtual void Print(std::ostream &os) const override;
 
-    // Add queue info
-    void AddQueueInfo(uint32_t switchId, uint32_t portId, uint32_t queueLength);
-
-    // Get all queue info
-    const std::vector<QueueInfo>& GetAllQueueInfo() const { return m_queueInfo; }
-
     // Set/Get sender's receiving queue length
     void SetSenderRxQueueLen(uint32_t len) { m_senderRxQueueLen = len; }
     uint32_t GetSenderRxQueueLen() const { return m_senderRxQueueLen; }
 
-    // Clear
-    void Clear() { m_queueInfo.clear(); m_senderRxQueueLen = 0; }
+    // Set/Get sender's PFC port count
+    void SetSenderPfcPortCount(uint32_t count) { m_senderPfcPortCount = count; }
+    uint32_t GetSenderPfcPortCount() const { return m_senderPfcPortCount; }
 
 private:
-    std::vector<QueueInfo> m_queueInfo;
-    uint32_t m_senderRxQueueLen;  // Receiving queue length at the sender's port
+    uint32_t m_senderRxQueueLen;    // Receiving queue length at the sender's port
+    uint32_t m_senderPfcPortCount;  // Number of ports in PFC pause state at the sender
 };
 
 } // namespace ns3

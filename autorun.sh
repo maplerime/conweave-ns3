@@ -52,20 +52,20 @@ sleep 0.1
 cecho "GREEN" "Running all in parallel. Check the processors running on background!"
 
 # Pure FECMP mode
-#cecho "GREEN" "\n----------------------------------"
-#cecho "GREEN" "Run Pure FECMP experiment..."
-#FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
-#cecho "YELLOW" "Running: lb=fecmp, flow: ${FLOW_FILE}"
-#python3 run.py --lb fecmp --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-#sleep 0.1
+cecho "GREEN" "\n----------------------------------"
+cecho "GREEN" "Run Pure FECMP experiment..."
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+cecho "YELLOW" "Running: lb=fecmp, flow: ${FLOW_FILE}"
+python3 run.py --lb fecmp --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
+sleep 0.1
 
 # Conweave mode
-#cecho "GREEN" "\n----------------------------------"
-#cecho "GREEN" "Run Conweave experiment..."
-#FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
-#cecho "YELLOW" "Running: lb=conweave, flow: ${FLOW_FILE}"
-#python3 run.py --lb conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-#sleep 0.1
+cecho "GREEN" "\n----------------------------------"
+cecho "GREEN" "Run Conweave experiment..."
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+cecho "YELLOW" "Running: lb=conweave, flow: ${FLOW_FILE}"
+python3 run.py --lb conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
+sleep 0.1
 
 # Inflex mode with different fecmp_bg levels
 cecho "GREEN" "\n----------------------------------"

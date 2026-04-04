@@ -57,6 +57,10 @@ SwitchNode::SwitchNode() {
     }
 }
 
+// Initialize static members
+uint32_t SwitchNode::m_inflexCallCount = 0;
+uint32_t SwitchNode::m_inflexEcmpFallbackCount = 0;
+
 /**
  * @brief Load Balancing
  */
@@ -240,7 +244,12 @@ void SwitchNode::SendToDevContinue(Ptr<Packet> p, CustomHeader &ch) {
         DoSwitchSend(p, ch, idx, qIndex);  // m_devices[idx]->SwitchSend(qIndex, p, ch);
         return;
     }
-    std::cout << "WARNING - Drop occurs in SendToDevContinue()" << std::endl;
+    // idx < 0: Check if this was a probe packet (processed locally, not an error)
+    QueueProbeTag probeTag;
+    if (!p->PeekPacketTag(probeTag)) {
+        // Only print warning if it's not a probe packet
+        std::cout << "WARNING - Drop occurs in SendToDevContinue()" << std::endl;
+    }
     return;  // Drop otherwise
 }
 
@@ -249,6 +258,11 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     QueueProbeTag probeTag;
     if (p->PeekPacketTag(probeTag)) {
         // Process probe packet - broadcast to all ports for Agg, store for ToR
+        static int probeRecvCount = 0;
+        if (probeRecvCount < 10) {
+            std::cerr << "[SW " << m_id << "] Received probe packet, QueueProbeTag found!" << std::endl;
+            probeRecvCount++;
+        }
         uint32_t inDev = 0;
         FlowIdTag t;
         if (p->PeekPacketTag(t)) {
@@ -496,17 +510,24 @@ uint64_t SwitchNode::GetTxBytesOutDev(uint32_t outdev) {
  *******************************************/
 
 void SwitchNode::StartProbeGeneration() {
-    if (m_switchType == SWITCH_TYPE_CORE) {
-        // Start periodic probe generation from Core switches
+    // All switch types (Core, Aggregation, ToR) generate probes in Inflex mode
+    if (Settings::lb_mode == 12) {
         m_probeEvent = Simulator::Schedule(NanoSeconds(m_probeInterval),
             &SwitchNode::GenerateAndSendProbe, this);
-        std::cout << "Core switch " << m_id << " started probe generation (interval="
+
+        const char* switchTypeStr = "Unknown";
+        if (m_switchType == SWITCH_TYPE_TOR) switchTypeStr = "ToR";
+        else if (m_switchType == SWITCH_TYPE_AGGREGATION) switchTypeStr = "Agg";
+        else if (m_switchType == SWITCH_TYPE_CORE) switchTypeStr = "Core";
+
+        std::cout << switchTypeStr << " switch " << m_id << " started probe generation (interval="
                   << m_probeInterval << "ns)" << std::endl;
     }
 }
 
 void SwitchNode::GenerateAndSendProbe() {
-    if (m_switchType != SWITCH_TYPE_CORE) {
+    // Only generate probes in Inflex mode
+    if (Settings::lb_mode != 12) {
         return;
     }
 
@@ -517,24 +538,49 @@ void SwitchNode::GenerateAndSendProbe() {
             continue;
         }
 
+        Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
+        if (!qbbDev) {
+            continue;
+        }
+
+        // Get receiving queue length for this port
+        uint32_t rxQueueLen = 0;
+        for (uint32_t q = 0; q < 8; q++) {
+            rxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
+        }
+
+        // Construct probe packet with proper headers
         Ptr<Packet> p = Create<Packet>(0);
         QueueProbeTag probeTag;
         p->AddPacketTag(probeTag);
 
         QueueMonitorHeader monitorHdr;
-        // Get receiving queue length for this port
-        uint32_t rxQueueLen = 0;
-        Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
-        if (qbbDev) {
-            for (uint32_t q = 0; q < 8; q++) {
-                rxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
-            }
-        }
         monitorHdr.SetSenderRxQueueLen(rxQueueLen);
         monitorHdr.SetSenderPfcPortCount(m_pfc_port_count);
-
         p->AddHeader(monitorHdr);
-        dev->Send(p, dev->GetBroadcast(), 0x0800);
+
+        // Add IPv4 header
+        Ipv4Header ipv4h;
+        ipv4h.SetProtocol(0xFB);  // Use 0xFB for queue monitoring probe
+        ipv4h.SetSource(GetObject<Ipv4>()->GetAddress(port, 0).GetLocal());
+        ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+        ipv4h.SetPayloadSize(p->GetSize());
+        ipv4h.SetTtl(1);
+        ipv4h.SetIdentification(m_id * 1000 + port);
+        p->AddHeader(ipv4h);
+
+        // Add PPP header
+        PppHeader ppp;
+        ppp.SetProtocol(0x0021);  // IPv4
+        p->AddHeader(ppp);
+
+        // Create CustomHeader for parsing
+        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header);
+        ch.getInt = 0;
+        p->PeekHeader(ch);
+
+        // Send via SwitchSend with queue 0 (not paused by PFC)
+        qbbDev->SwitchSend(0, p, ch);
     }
 
     // Schedule next probe
@@ -545,118 +591,67 @@ void SwitchNode::GenerateAndSendProbe() {
 void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
     QueueMonitorHeader monitorHdr;
     p->PeekHeader(monitorHdr);
+    p->RemoveHeader(monitorHdr);
 
+    // Get the rx queue length and PFC port count from the sender
+    uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
+    uint32_t receivedPfcPortCount = monitorHdr.GetSenderPfcPortCount();
+
+    // Store the received remote queue info based on switch type
     if (m_switchType == SWITCH_TYPE_AGGREGATION) {
-        p->RemoveHeader(monitorHdr);
-
-        // Get the rx queue length and PFC port count from the sender
-        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
-        uint32_t receivedPfcPortCount = monitorHdr.GetSenderPfcPortCount();
-
-        // Detect direction by checking if inDev is connected to Core or Tor
-        // Assume Core ports are higher numbered than Tor ports
+        // Aggregation switch: store separately for uplink and downlink
         uint32_t midPort = GetNDevices() / 2;
         bool isFromCore = (inDev > midPort);
 
         if (isFromCore) {
-            // Forward path: from Core, store in uplink storage
+            // From Core: store in uplink storage
             m_uplinkRxQueueLen[inDev] = receivedRxQueueLen;
             m_uplinkPfcPortCount[inDev] = receivedPfcPortCount;
-
-            // Forward to all Tor switches (ports 1 to midPort)
-            for (uint32_t port = 1; port <= midPort; port++) {
-                if (GetDevice(port)->IsLinkUp()) {
-                    Ptr<NetDevice> dev = GetDevice(port);
-                    // Get this port's receiving queue length
-                    uint32_t txRxQueueLen = 0;
-                    Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
-                    if (qbbDev) {
-                        for (uint32_t q = 0; q < 8; q++) {
-                            txRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
-                        }
-                    }
-
-                    // Create new probe with this port's rx queue length and PFC count
-                    Ptr<Packet> newP = Create<Packet>(0);
-                    QueueProbeTag probeTag;
-                    newP->AddPacketTag(probeTag);
-                    QueueMonitorHeader newHdr;
-                    newHdr.SetSenderRxQueueLen(txRxQueueLen);
-                    newHdr.SetSenderPfcPortCount(m_pfc_port_count);
-                    newP->AddHeader(newHdr);
-                    dev->Send(newP, dev->GetBroadcast(), 0x0800);
-                }
-            }
         } else {
-            // Reverse path: from Tor, store in downlink storage
+            // From ToR: store in downlink storage
             m_downlinkRxQueueLen[inDev] = receivedRxQueueLen;
             m_downlinkPfcPortCount[inDev] = receivedPfcPortCount;
+        }
 
-            // Send back to Core (ports midPort+1 to end)
-            for (uint32_t port = midPort + 1; port < GetNDevices(); port++) {
-                if (GetDevice(port)->IsLinkUp()) {
-                    Ptr<NetDevice> dev = GetDevice(port);
-                    // Get this port's receiving queue length
-                    uint32_t txRxQueueLen = 0;
-                    Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
-                    if (qbbDev) {
-                        for (uint32_t q = 0; q < 8; q++) {
-                            txRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
-                        }
-                    }
-
-                    // Create new probe with this port's rx queue length and PFC count
-                    Ptr<Packet> newP = Create<Packet>(0);
-                    QueueProbeTag probeTag;
-                    newP->AddPacketTag(probeTag);
-                    QueueMonitorHeader newHdr;
-                    newHdr.SetSenderRxQueueLen(txRxQueueLen);
-                    newHdr.SetSenderPfcPortCount(m_pfc_port_count);
-                    newP->AddHeader(newHdr);
-                    dev->Send(newP, dev->GetBroadcast(), 0x0800);
-                }
-            }
+        // Debug logging
+        static int aggProbeRecvCount = 0;
+        if (aggProbeRecvCount < 5) {
+            const char* fromType = isFromCore ? "Core" : "ToR";
+            std::cout << "[Agg " << m_id << "] Received probe from " << fromType
+                      << " on port " << inDev << ", rxQueueLen=" << receivedRxQueueLen
+                      << ", pfcCount=" << receivedPfcPortCount << std::endl;
+            aggProbeRecvCount++;
         }
     }
     else if (m_switchType == SWITCH_TYPE_TOR) {
-        p->RemoveHeader(monitorHdr);
-
-        // Store the rx queue length and PFC port count from Agg
-        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
-        uint32_t receivedPfcPortCount = monitorHdr.GetSenderPfcPortCount();
+        // ToR switch: store remote queue info from Agg
         m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
+        // Also store PFC count (using same map for now)
         m_remotePfcPortCount[inDev] = receivedPfcPortCount;
 
-        // Send reverse probe back to Agg with Tor's rx queue length and PFC count
-        Ptr<NetDevice> inDevDevice = GetDevice(inDev);
-        uint32_t torRxQueueLen = 0;
-        Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(inDevDevice);
-        if (qbbDev) {
-            for (uint32_t q = 0; q < 8; q++) {
-                torRxQueueLen += qbbDev->GetQueue()->GetNBytes(q);
-            }
-        }
-
-        Ptr<Packet> newP = Create<Packet>(0);
-        QueueProbeTag probeTag;
-        newP->AddPacketTag(probeTag);
-        QueueMonitorHeader newHdr;
-        newHdr.SetSenderRxQueueLen(torRxQueueLen);
-        newHdr.SetSenderPfcPortCount(m_pfc_port_count);
-        newP->AddHeader(newHdr);
-
-        if (inDevDevice->IsLinkUp()) {
-            inDevDevice->Send(newP, inDevDevice->GetBroadcast(), 0x0800);
+        // Debug logging
+        static int torProbeRecvCount = 0;
+        if (torProbeRecvCount < 5) {
+            std::cout << "[ToR " << m_id << "] Received probe on port " << inDev
+                      << ", remoteRxQueueLen=" << receivedRxQueueLen
+                      << ", remotePfcCount=" << receivedPfcPortCount << std::endl;
+            torProbeRecvCount++;
         }
     }
     else if (m_switchType == SWITCH_TYPE_CORE) {
-        p->RemoveHeader(monitorHdr);
-
-        // Store the rx queue length and PFC port count from Agg
-        uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
-        uint32_t receivedPfcPortCount = monitorHdr.GetSenderPfcPortCount();
+        // Core switch: store remote queue info from Agg
         m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
+        // Also store PFC count (using same map for now)
         m_remotePfcPortCount[inDev] = receivedPfcPortCount;
+
+        // Debug logging
+        static int coreProbeRecvCount = 0;
+        if (coreProbeRecvCount < 5) {
+            std::cout << "[Core " << m_id << "] Received probe on port " << inDev
+                      << ", remoteRxQueueLen=" << receivedRxQueueLen
+                      << ", remotePfcCount=" << receivedPfcPortCount << std::endl;
+            coreProbeRecvCount++;
+        }
     }
 }
 
@@ -665,22 +660,15 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
  *******************************************/
 
 int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // ToR selects uplink port: ToR -> Agg
-    // For each port, calculate: local_tx_queue + ((remote_pfc_count + 1) * remote_rx_queue)
-    // Select port with minimum total
-
-    if (m_remoteRxQueueLen.empty()) {
-        // No queue info yet, fall back to ECMP
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
+    m_inflexCallCount++;
 
     struct PathOption {
         int port;
-        uint32_t totalQueue;
+        uint64_t cost;  // Combined cost metric
     };
     std::vector<PathOption> pathOptions;
 
-    // For each output port (to Agg), calculate total queue length
+    // For each output port (to Agg), calculate path cost
     for (int port : nexthops) {
         // Get local ToR→Agg tx queue length for this port
         uint32_t localTxQueue = 0;
@@ -692,26 +680,25 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
             }
         }
 
-        // Get remote Agg's rx queue length from stored probe info
-        uint32_t remoteRxQueue = 0;
+        // Get remote queue length and PFC count from Agg (received via probe)
+        uint32_t remoteRxQueueLen = 0;
         auto it = m_remoteRxQueueLen.find(port);
         if (it != m_remoteRxQueueLen.end()) {
-            remoteRxQueue = it->second;
+            remoteRxQueueLen = it->second;
         }
 
-        // Get remote Agg's PFC port count from stored probe info
         uint32_t remotePfcCount = 0;
         auto itPfc = m_remotePfcPortCount.find(port);
         if (itPfc != m_remotePfcPortCount.end()) {
             remotePfcCount = itPfc->second;
         }
 
-        // Calculate total: local_tx_queue + ((remote_pfc_count + 1) * remote_rx_queue)
-        uint32_t totalQueue = localTxQueue + ((remotePfcCount + 1) * remoteRxQueue);
+        // Calculate path cost: local_tx_queue + remote_rx_queue * pfc_count
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen * (remotePfcCount + 1));
 
         PathOption opt;
         opt.port = port;
-        opt.totalQueue = totalQueue;
+        opt.cost = pathCost;
         pathOptions.push_back(opt);
     }
 
@@ -719,32 +706,25 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
-    // Select path with minimum total queue
+    // Select path with minimum cost
     auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
         [](const PathOption& a, const PathOption& b) {
-            return a.totalQueue < b.totalQueue;
+            return a.cost < b.cost;
         });
 
     return best->port;
 }
 
 int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Core selects downlink port: Core -> Agg
-    // For each port, calculate: local_tx_queue + ((remote_pfc_count + 1) * remote_rx_queue)
-    // Select port with minimum total
-
-    if (m_remoteRxQueueLen.empty()) {
-        // No queue info yet, fall back to ECMP
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
+    // Core selects downlink port: Core -> Agg using path cost metric
 
     struct PathOption {
         int port;
-        uint32_t totalQueue;
+        uint64_t cost;  // Combined cost metric
     };
     std::vector<PathOption> pathOptions;
 
-    // For each output port (to Agg), calculate total queue length
+    // For each output port (to Agg), calculate path cost
     for (int port : nexthops) {
         // Get local Core→Agg tx queue length for this port
         uint32_t localTxQueue = 0;
@@ -756,26 +736,25 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
             }
         }
 
-        // Get remote Agg's rx queue length from stored probe info
-        uint32_t remoteRxQueue = 0;
+        // Get remote queue length and PFC count from Agg (received via probe)
+        uint32_t remoteRxQueueLen = 0;
         auto it = m_remoteRxQueueLen.find(port);
         if (it != m_remoteRxQueueLen.end()) {
-            remoteRxQueue = it->second;
+            remoteRxQueueLen = it->second;
         }
 
-        // Get remote Agg's PFC port count from stored probe info
         uint32_t remotePfcCount = 0;
         auto itPfc = m_remotePfcPortCount.find(port);
         if (itPfc != m_remotePfcPortCount.end()) {
             remotePfcCount = itPfc->second;
         }
 
-        // Calculate total: local_tx_queue + ((remote_pfc_count + 1) * remote_rx_queue)
-        uint32_t totalQueue = localTxQueue + ((remotePfcCount + 1) * remoteRxQueue);
+        // Calculate path cost: local_tx_queue + remote_rx_queue * pfc_count
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen * (remotePfcCount + 1));
 
         PathOption opt;
         opt.port = port;
-        opt.totalQueue = totalQueue;
+        opt.cost = pathCost;
         pathOptions.push_back(opt);
     }
 
@@ -783,47 +762,26 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
+    // Select path with minimum cost
     auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
         [](const PathOption& a, const PathOption& b) {
-            return a.totalQueue < b.totalQueue;
+            return a.cost < b.cost;
         });
 
     return best->port;
 }
 
 int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Agg forwards packets based on queue info
-    // Determine direction by checking port numbers:
-    // - Higher ports ( > midPort ) are uplink to Core
-    // - Lower ports ( <= midPort ) are downlink to Tor
-
+    // Agg selects path using cost metric (same as ToR and Core)
     uint32_t midPort = GetNDevices() / 2;
-
-    // Check if forwarding to Core (uplink) or Tor (downlink)
-    bool isUplink = false;
-    for (int port : nexthops) {
-        if (port > (int)midPort) {
-            isUplink = true;
-            break;
-        }
-    }
 
     struct PathOption {
         int port;
-        uint32_t totalQueue;
+        uint64_t cost;  // Combined cost metric
     };
     std::vector<PathOption> pathOptions;
 
-    // Select the appropriate storage based on direction
-    auto& remoteRxQueue = isUplink ? m_uplinkRxQueueLen : m_downlinkRxQueueLen;
-    auto& remotePfcCount = isUplink ? m_uplinkPfcPortCount : m_downlinkPfcPortCount;
-
-    // Check if we have queue info
-    if (remoteRxQueue.empty()) {
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
-
-    // For each output port, calculate total queue length
+    // For each output port, calculate path cost
     for (int port : nexthops) {
         // Get local tx queue length for this port
         uint32_t localTxQueue = 0;
@@ -835,26 +793,41 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
             }
         }
 
-        // Get remote rx queue length from stored probe info
-        uint32_t remoteRxLen = 0;
-        auto it = remoteRxQueue.find(port);
-        if (it != remoteRxQueue.end()) {
-            remoteRxLen = it->second;
+        // Determine if this is uplink (to Core) or downlink (to ToR)
+        bool isUplink = (port > midPort);
+
+        // Get remote queue length and PFC count based on direction
+        uint32_t remoteRxQueueLen = 0;
+        uint32_t remotePfcCount = 0;
+
+        if (isUplink) {
+            // To Core: use uplink storage
+            auto it = m_uplinkRxQueueLen.find(port);
+            if (it != m_uplinkRxQueueLen.end()) {
+                remoteRxQueueLen = it->second;
+            }
+            auto itPfc = m_uplinkPfcPortCount.find(port);
+            if (itPfc != m_uplinkPfcPortCount.end()) {
+                remotePfcCount = itPfc->second;
+            }
+        } else {
+            // To ToR: use downlink storage
+            auto it = m_downlinkRxQueueLen.find(port);
+            if (it != m_downlinkRxQueueLen.end()) {
+                remoteRxQueueLen = it->second;
+            }
+            auto itPfc = m_downlinkPfcPortCount.find(port);
+            if (itPfc != m_downlinkPfcPortCount.end()) {
+                remotePfcCount = itPfc->second;
+            }
         }
 
-        // Get remote PFC port count from stored probe info
-        uint32_t remotePfcPortCount = 0;
-        auto itPfc = remotePfcCount.find(port);
-        if (itPfc != remotePfcCount.end()) {
-            remotePfcPortCount = itPfc->second;
-        }
-
-        // Calculate total: local_tx_queue + ((remote_pfc_count + 1) * remote_rx_queue)
-        uint32_t totalQueue = localTxQueue + ((remotePfcPortCount + 1) * remoteRxLen);
+        // Calculate path cost: local_tx_queue + remote_rx_queue * (pfc_count + 1)
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen * (remotePfcCount + 1));
 
         PathOption opt;
         opt.port = port;
-        opt.totalQueue = totalQueue;
+        opt.cost = pathCost;
         pathOptions.push_back(opt);
     }
 
@@ -862,9 +835,10 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
+    // Select path with minimum cost
     auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
         [](const PathOption& a, const PathOption& b) {
-            return a.totalQueue < b.totalQueue;
+            return a.cost < b.cost;
         });
 
     return best->port;

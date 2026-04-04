@@ -1596,16 +1596,15 @@ int main(int argc, char *argv[]) {
         }
         std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
 
-        // Start queue monitoring probe generation on Core switches (only for Inflex mode)
+        // Start queue monitoring probe generation on all switches (only for Inflex mode)
         if (Settings::lb_mode == 12) {
             std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
             for (uint32_t i = 0; i < n.GetN(); i++) {
                 Ptr<Node> node = n.Get(i);
                 if (node->GetNodeType() == 1) {
                     Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
-                    if (sw->GetSwitchType() == SWITCH_TYPE_CORE) {
-                        sw->StartProbeGeneration();
-                    }
+                    // All switch types (ToR, Aggregation, Core) generate probes in Inflex mode
+                    sw->StartProbeGeneration();
                 }
             }
         }
@@ -1913,6 +1912,19 @@ int main(int argc, char *argv[]) {
     /*-----------------------------------------------------------------------------*/
     Simulator::Destroy();
     NS_LOG_INFO("Total number of packets: " << RdmaHw::nAllPkts);
+
+    // Output Inflex statistics if using Inflex load balancing
+    if (Settings::lb_mode == 12) {
+        std::cout << "=== INFLEX STATISTICS ===" << std::endl;
+        std::cout << "Inflex calls: " << SwitchNode::m_inflexCallCount << std::endl;
+        std::cout << "Inflex ECMP fallback: " << SwitchNode::m_inflexEcmpFallbackCount << std::endl;
+        if (SwitchNode::m_inflexCallCount > 0) {
+            double fallbackPercent = 100.0 * SwitchNode::m_inflexEcmpFallbackCount / SwitchNode::m_inflexCallCount;
+            std::cout << "Fallback rate: " << fallbackPercent << "%" << std::endl;
+        }
+        std::cout << "========================" << std::endl;
+    }
+
     NS_LOG_INFO("Done.");
     endt = clock();
     std::cerr << (double)(endt - begint) / CLOCKS_PER_SEC << "\n";

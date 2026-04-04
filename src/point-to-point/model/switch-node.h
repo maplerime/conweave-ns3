@@ -97,10 +97,14 @@ class SwitchNode : public Node {
     std::unordered_set<uint32_t> m_pfc_ports;  // Set of ports in PFC pause state
     uint32_t m_pfc_port_count;                  // Current number of ports in PFC state
 
+    // Inflex call counter (for debugging)
+    static uint32_t m_inflexCallCount;
+    static uint32_t m_inflexEcmpFallbackCount;
+
     // Probe generation
     EventId m_probeEvent;
     uint64_t m_probeInterval;
-    static const uint64_t DEFAULT_PROBE_INTERVAL = 20000;  // 20us in nanoseconds
+    static const uint64_t DEFAULT_PROBE_INTERVAL = 10000000;  // 10ms in nanoseconds - reduced probe rate
 
     // Queue monitoring methods
     void StartProbeGeneration();

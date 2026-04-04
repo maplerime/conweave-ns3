@@ -193,12 +193,12 @@ void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex) {
         }
     }
 
-    // Send probe to connected switch when PFC state changes
-    // Only for switch-to-switch ports (not host ports)
+    // Send probe to all ports when PFC counter changes (immediate, no rate limit)
     if (pfcStateChanged && Settings::lb_mode == 12) {
-        // inDev is the input port, we need to send probe out through the same port
-        // to notify the connected switch
-        SendProbeToPort(inDev);
+        // PFC变化：立即向所有端口发送probe，不限速
+        for (uint32_t port = 1; port < GetNDevices(); port++) {
+            SendProbeToPortImmediate(port);
+        }
     }
 }
 void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex) {
@@ -402,13 +402,7 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
                     uint32_t maxBuffer = m_mmu->GetMaxBufferBytesPerPort();
                     if (maxBuffer > 0 && (ingressBytes * 100 / maxBuffer) > QUEUE_OCCUPANCY_THRESHOLD) {
                         // Queue occupancy > 60%, send probe to notify connected switch
-                        static std::map<uint32_t, uint64_t> lastProbeTime;
-                        uint64_t now = Simulator::Now().GetNanoSeconds();
-                        // Limit probe rate: at most one probe per 1us per port
-                        if (now - lastProbeTime[inDev] > 1000) {
-                            SendProbeToPort(inDev);
-                            lastProbeTime[inDev] = now;
-                        }
+                        SendProbeToPort(inDev);  // Rate limiting handled inside
                     }
                 }
             } else { /** DROP: At Ingress */
@@ -560,18 +554,34 @@ void SwitchNode::StartProbeGeneration() {
 }
 
 void SwitchNode::SendProbeToPort(uint32_t port) {
-    // Only send probe in Inflex mode
+    // Rate-limited probe for queue>60% trigger (20us limit)
+    SendProbeToPortInternal(port, PROBE_RATE_LIMIT_NS);
+}
+
+void SwitchNode::SendProbeToPortImmediate(uint32_t port) {
+    // Immediate probe for PFC change trigger (no rate limit)
+    SendProbeToPortInternal(port, 0);
+}
+
+void SwitchNode::SendProbeToPortInternal(uint32_t port, uint64_t rateLimitNs) {
+    // Internal helper: send probe with specified rate limit
+    // rateLimitNs = 0 means immediate, > 0 means minimum interval between probes
+
     if (Settings::lb_mode != 12) {
         return;
     }
 
-    // Don't send probe to host ports (port 0 is usually not used, high ports may be hosts)
-    // For ToR: ports > m_nSwitchPorts are host ports
-    // For Agg/Core: all ports are switch ports
+    // Don't send probe to host ports (port 0 is invalid)
+    if (port == 0) {
+        return;
+    }
+
+    // For ToR switches, skip host ports
     if (m_switchType == SWITCH_TYPE_TOR) {
-        // ToR switch: skip host ports (assuming first N ports are to other switches)
-        // Need to determine which ports are switch ports vs host ports
-        // For now, send to all ports except port 0
+        uint32_t nSwitchPorts = 20;
+        if (port >= nSwitchPorts) {
+            return;
+        }
     }
 
     Ptr<NetDevice> dev = GetDevice(port);
@@ -582,6 +592,18 @@ void SwitchNode::SendProbeToPort(uint32_t port) {
     Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
     if (!qbbDev) {
         return;
+    }
+
+    // Rate limiting (skip if rateLimitNs > 0 and not enough time passed)
+    if (rateLimitNs > 0) {
+        static std::map<uint32_t, uint64_t> lastProbeTime;
+        uint64_t now = Simulator::Now().GetNanoSeconds();
+        if (lastProbeTime.find(port) != lastProbeTime.end()) {
+            if (now - lastProbeTime[port] < rateLimitNs) {
+                return;  // Too soon, skip
+            }
+        }
+        lastProbeTime[port] = now;
     }
 
     // Get ingress buffer occupancy for this port
@@ -599,7 +621,7 @@ void SwitchNode::SendProbeToPort(uint32_t port) {
 
     // Add IPv4 header
     Ipv4Header ipv4h;
-    ipv4h.SetProtocol(0xFB);  // Use 0xFB for queue monitoring probe
+    ipv4h.SetProtocol(0xFB);
     ipv4h.SetSource(GetObject<Ipv4>()->GetAddress(port, 0).GetLocal());
     ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
     ipv4h.SetPayloadSize(p->GetSize());
@@ -609,7 +631,7 @@ void SwitchNode::SendProbeToPort(uint32_t port) {
 
     // Add PPP header
     PppHeader ppp;
-    ppp.SetProtocol(0x0021);  // IPv4
+    ppp.SetProtocol(0x0021);
     p->AddHeader(ppp);
 
     // Create CustomHeader for parsing
@@ -617,16 +639,8 @@ void SwitchNode::SendProbeToPort(uint32_t port) {
     ch.getInt = 0;
     p->PeekHeader(ch);
 
-    // Send via SwitchSend with queue 0 (not paused by PFC)
+    // Send via SwitchSend with queue 0
     qbbDev->SwitchSend(0, p, ch);
-
-    // Debug: print probe data
-    static int probeDebugCount = 0;
-    if (probeDebugCount < 10) {
-        std::cout << "[Switch " << m_id << " port " << port << "] TX event-driven probe: rxQueueLen=" << rxQueueLen
-                  << ", pfcCount=" << m_pfc_port_count << std::endl;
-        probeDebugCount++;
-    }
 }
 
 void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
@@ -645,13 +659,8 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
     uint32_t receivedRxQueueLen = monitorHdr.GetSenderRxQueueLen();
     uint32_t receivedPfcPortCount = monitorHdr.GetSenderPfcPortCount();
 
-    // Debug: print first few received probes
-    static int probeRecvDebugCount = 0;
-    if (probeRecvDebugCount < 3) {
-        std::cout << "[SW " << m_id << "] ProcessProbe: receivedRxQueueLen=" << receivedRxQueueLen
-                  << ", receivedPfcPortCount=" << receivedPfcPortCount << std::endl;
-        probeRecvDebugCount++;
-    }
+    // Get current timestamp
+    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
     // Store the received remote queue info based on switch type
     if (m_switchType == SWITCH_TYPE_AGGREGATION) {
@@ -663,10 +672,12 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
             // From Core: store in uplink storage
             m_uplinkRxQueueLen[inDev] = receivedRxQueueLen;
             m_uplinkPfcPortCount[inDev] = receivedPfcPortCount;
+            m_uplinkProbeTimestamp[inDev] = currentTime;
         } else {
             // From ToR: store in downlink storage
             m_downlinkRxQueueLen[inDev] = receivedRxQueueLen;
             m_downlinkPfcPortCount[inDev] = receivedPfcPortCount;
+            m_downlinkProbeTimestamp[inDev] = currentTime;
         }
 
         // Debug logging
@@ -675,37 +686,40 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
             const char* fromType = isFromCore ? "Core" : "ToR";
             std::cout << "[Agg " << m_id << "] Received probe from " << fromType
                       << " on port " << inDev << ", rxQueueLen=" << receivedRxQueueLen
-                      << ", pfcCount=" << receivedPfcPortCount << std::endl;
+                      << ", pfcCount=" << receivedPfcPortCount
+                      << ", timestamp=" << currentTime << std::endl;
             aggProbeRecvCount++;
         }
     }
     else if (m_switchType == SWITCH_TYPE_TOR) {
         // ToR switch: store remote queue info from Agg
         m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
-        // Also store PFC count (using same map for now)
         m_remotePfcPortCount[inDev] = receivedPfcPortCount;
+        m_remoteProbeTimestamp[inDev] = currentTime;
 
         // Debug logging
         static int torProbeRecvCount = 0;
         if (torProbeRecvCount < 5) {
             std::cout << "[ToR " << m_id << "] Received probe on port " << inDev
                       << ", remoteRxQueueLen=" << receivedRxQueueLen
-                      << ", remotePfcCount=" << receivedPfcPortCount << std::endl;
+                      << ", remotePfcCount=" << receivedPfcPortCount
+                      << ", timestamp=" << currentTime << std::endl;
             torProbeRecvCount++;
         }
     }
     else if (m_switchType == SWITCH_TYPE_CORE) {
         // Core switch: store remote queue info from Agg
         m_remoteRxQueueLen[inDev] = receivedRxQueueLen;
-        // Also store PFC count (using same map for now)
         m_remotePfcPortCount[inDev] = receivedPfcPortCount;
+        m_remoteProbeTimestamp[inDev] = currentTime;
 
         // Debug logging
         static int coreProbeRecvCount = 0;
         if (coreProbeRecvCount < 5) {
             std::cout << "[Core " << m_id << "] Received probe on port " << inDev
                       << ", remoteRxQueueLen=" << receivedRxQueueLen
-                      << ", remotePfcCount=" << receivedPfcPortCount << std::endl;
+                      << ", remotePfcCount=" << receivedPfcPortCount
+                      << ", timestamp=" << currentTime << std::endl;
             coreProbeRecvCount++;
         }
     }
@@ -726,6 +740,9 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
 
     // PFC penalty constant - multiplied by PFC count
     const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
+    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+
+    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
     // For each output port (to Agg), calculate path cost
     for (int port : nexthops) {
@@ -741,12 +758,22 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
 
         // Get remote queue length and PFC count from Agg (received via probe)
         uint32_t remoteRxQueueLen = 0;
+        uint32_t remotePfcCount = 0;
+
+        // Check if probe info is stale (> 20us), if so, clear rxQueueLen
+        auto itTimestamp = m_remoteProbeTimestamp.find(port);
+        if (itTimestamp != m_remoteProbeTimestamp.end()) {
+            if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                // Probe info is stale, clear rxQueueLen
+                m_remoteRxQueueLen[port] = 0;
+            }
+        }
+
         auto it = m_remoteRxQueueLen.find(port);
         if (it != m_remoteRxQueueLen.end()) {
             remoteRxQueueLen = it->second;
         }
 
-        uint32_t remotePfcCount = 0;
         auto itPfc = m_remotePfcPortCount.find(port);
         if (itPfc != m_remotePfcPortCount.end()) {
             remotePfcCount = itPfc->second;
@@ -786,6 +813,9 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
 
     // PFC penalty constant - multiplied by PFC count
     const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
+    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+
+    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
     // For each output port (to Agg), calculate path cost
     for (int port : nexthops) {
@@ -801,12 +831,22 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
 
         // Get remote queue length and PFC count from Agg (received via probe)
         uint32_t remoteRxQueueLen = 0;
+        uint32_t remotePfcCount = 0;
+
+        // Check if probe info is stale (> 20us), if so, clear rxQueueLen
+        auto itTimestamp = m_remoteProbeTimestamp.find(port);
+        if (itTimestamp != m_remoteProbeTimestamp.end()) {
+            if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                // Probe info is stale, clear rxQueueLen
+                m_remoteRxQueueLen[port] = 0;
+            }
+        }
+
         auto it = m_remoteRxQueueLen.find(port);
         if (it != m_remoteRxQueueLen.end()) {
             remoteRxQueueLen = it->second;
         }
 
-        uint32_t remotePfcCount = 0;
         auto itPfc = m_remotePfcPortCount.find(port);
         if (itPfc != m_remotePfcPortCount.end()) {
             remotePfcCount = itPfc->second;
@@ -847,6 +887,9 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
 
     // PFC penalty constant - multiplied by PFC count
     const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
+    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+
+    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
     // For each output port, calculate path cost
     for (int port : nexthops) {
@@ -868,7 +911,14 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
         uint32_t remotePfcCount = 0;
 
         if (isUplink) {
-            // To Core: use uplink storage
+            // To Core: use uplink storage, check timestamp
+            auto itTimestamp = m_uplinkProbeTimestamp.find(port);
+            if (itTimestamp != m_uplinkProbeTimestamp.end()) {
+                if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                    // Probe info is stale, clear rxQueueLen
+                    m_uplinkRxQueueLen[port] = 0;
+                }
+            }
             auto it = m_uplinkRxQueueLen.find(port);
             if (it != m_uplinkRxQueueLen.end()) {
                 remoteRxQueueLen = it->second;
@@ -878,7 +928,14 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
                 remotePfcCount = itPfc->second;
             }
         } else {
-            // To ToR: use downlink storage
+            // To ToR: use downlink storage, check timestamp
+            auto itTimestamp = m_downlinkProbeTimestamp.find(port);
+            if (itTimestamp != m_downlinkProbeTimestamp.end()) {
+                if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                    // Probe info is stale, clear rxQueueLen
+                    m_downlinkRxQueueLen[port] = 0;
+                }
+            }
             auto it = m_downlinkRxQueueLen.find(port);
             if (it != m_downlinkRxQueueLen.end()) {
                 remoteRxQueueLen = it->second;

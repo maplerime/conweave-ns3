@@ -78,12 +78,15 @@ class SwitchNode : public Node {
     // Receiving queue length from remote switches
     // Map: receiving_port -> rx_queue_length on remote end
     std::map<uint32_t, uint32_t> m_remoteRxQueueLen;  // For Tor and Core
+    std::map<uint32_t, uint64_t> m_remoteProbeTimestamp;  // port -> timestamp when probe was received
 
     // For Aggregation switch: separate uplink and downlink storage
     // Uplink: from Core (receiving_port -> rx_queue_length from Core)
     std::map<uint32_t, uint32_t> m_uplinkRxQueueLen;
+    std::map<uint32_t, uint64_t> m_uplinkProbeTimestamp;  // timestamp for uplink
     // Downlink: from Tor (receiving_port -> rx_queue_length from Tor)
     std::map<uint32_t, uint32_t> m_downlinkRxQueueLen;
+    std::map<uint32_t, uint64_t> m_downlinkProbeTimestamp;  // timestamp for downlink
 
     // Remote PFC port count storage (received from probes)
     // For Tor and Core: receiving_port -> PFC port count at remote end
@@ -103,13 +106,18 @@ class SwitchNode : public Node {
 
     // Probe generation - event driven (PFC change or queue occupancy > 60%)
     static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
-    std::map<uint32_t, bool> m_portProbePending;  // Track if probe is pending for each port
+    static const uint64_t PROBE_RATE_LIMIT_NS = 20000;     // 20us minimum between probes
 
     // Queue monitoring methods
     void StartProbeGeneration();
-    void SendProbeToPort(uint32_t port);  // Send probe to specific switch port (not host)
+    void SendProbeToPort(uint32_t port);  // Rate-limited probe for queue>60% trigger
+    void SendProbeToPortImmediate(uint32_t port);  // Immediate probe for PFC change trigger
     void ProcessProbePacket(Ptr<Packet> p, uint32_t inDev);
 
+private:
+    void SendProbeToPortInternal(uint32_t port, uint64_t rateLimitNs);  // Internal helper
+
+   public:
     /*----- Inflex Path Selection -----*/
     // Select uplink path (ToR -> Agg -> Core) based on queue info
     int SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops);

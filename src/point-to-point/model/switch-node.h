@@ -101,14 +101,13 @@ class SwitchNode : public Node {
     static uint32_t m_inflexCallCount;
     static uint32_t m_inflexEcmpFallbackCount;
 
-    // Probe generation
-    EventId m_probeEvent;
-    uint64_t m_probeInterval;
-    static const uint64_t DEFAULT_PROBE_INTERVAL = 10000000;  // 10ms in nanoseconds - reduced probe rate
+    // Probe generation - event driven (PFC change or queue occupancy > 60%)
+    static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
+    std::map<uint32_t, bool> m_portProbePending;  // Track if probe is pending for each port
 
     // Queue monitoring methods
     void StartProbeGeneration();
-    void GenerateAndSendProbe();
+    void SendProbeToPort(uint32_t port);  // Send probe to specific switch port (not host)
     void ProcessProbePacket(Ptr<Packet> p, uint32_t inDev);
 
     /*----- Inflex Path Selection -----*/

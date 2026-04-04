@@ -210,6 +210,15 @@ void SwitchMmu::UpdateIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t 
     m_usedIngressSPBytes[GetIngressSP(port, qIndex)] += psize;
     m_usedIngressPortBytes[port] += psize;
     m_usedIngressPGBytes[port][qIndex] += psize;
+
+    // Debug: track ingress buffer updates
+    static int ingressUpdateCount = 0;
+    if (ingressUpdateCount < 5 && qIndex > 0) {
+        std::cout << "[Ingress Update] port=" << port << " qIndex=" << qIndex
+                  << " psize=" << psize << " m_usedIngressPGBytes[port][qIndex]="
+                  << m_usedIngressPGBytes[port][qIndex] << std::endl;
+        ingressUpdateCount++;
+    }
     if (m_usedIngressSPBytes[GetIngressSP(port, qIndex)] >
         m_buffer_cell_limit_sp)  // begin to use headroom buffer
     {
@@ -273,6 +282,15 @@ void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint3
     m_usedIngressSPBytes[GetIngressSP(port, qIndex)] -= psize;
     m_usedIngressPortBytes[port] -= psize;
     m_usedIngressPGBytes[port][qIndex] -= psize;
+
+    // Debug: track ingress buffer removal
+    static int ingressRemoveCount = 0;
+    if (ingressRemoveCount < 5 && qIndex > 0) {
+        std::cout << "[Ingress Remove] port=" << port << " qIndex=" << qIndex
+                  << " psize=" << psize << " m_usedIngressPGBytes[port][qIndex]="
+                  << m_usedIngressPGBytes[port][qIndex] << std::endl;
+        ingressRemoveCount++;
+    }
     if ((double)m_usedIngressPGHeadroomBytes[port][qIndex] - psize > 0)
         m_usedIngressPGHeadroomBytes[port][qIndex] -= psize;
     else
@@ -393,6 +411,18 @@ uint32_t SwitchMmu::GetEgressSP(uint32_t port, uint32_t qIndex) {
         return 0;
     else
         return 1;
+}
+
+uint32_t SwitchMmu::GetIngressBufferBytes(uint32_t port) {
+    if (port >= pCnt) {
+        return 0;
+    }
+    // Return total ingress buffer usage for this port across all priority groups
+    uint32_t totalBytes = 0;
+    for (uint32_t q = 0; q < qCnt; q++) {
+        totalBytes += m_usedIngressPGBytes[port][q];
+    }
+    return totalBytes;
 }
 
 bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {

@@ -19,13 +19,17 @@ class SimulationResult:
     """Store simulation results for a single configuration."""
 
     def __init__(self, lb_mode: int, fecmp_bg: int, path: str):
-        self.lb_mode = lb_mode  # 0 = ECMP, 10 = Hybrid, 12 = Inflex
+        self.lb_mode = lb_mode  # 0 = ECMP, 9 = Conweave, 10 = Hybrid, 12 = Inflex
         self.fecmp_bg = fecmp_bg
         self.path = path
         if lb_mode == 0:
             self.mode_name = "ECMP"
+        elif lb_mode == 9:
+            self.mode_name = "Conweave"  # No fecmp_bg suffix
         elif lb_mode == 10:
             self.mode_name = f"Hybrid({fecmp_bg})" if fecmp_bg > 0 else "Hybrid(0)"
+        elif lb_mode == 11:
+            self.mode_name = f"ECMP-Conweave({fecmp_bg})" if fecmp_bg > 0 else "ECMP-Conweave(0)"
         else:  # lb_mode == 12
             self.mode_name = f"Inflex({fecmp_bg})" if fecmp_bg > 0 else "Inflex(0)"
 
@@ -252,17 +256,23 @@ def format_delta(delta_percent: float, show_sign: bool = True) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult]):
     """Print FCT performance comparison table."""
-    # Sort by mode name: ECMP, Hybrid, then Inflex, by fBG value
+    # Sort by mode name: ECMP, Conweave, Hybrid, ECMP-Conweave, then Inflex, by fBG value
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'ECMP':
             return (0, 0)
-        bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-        if mode == 'Hybrid':
-            return (1, bg)
-        elif mode == 'Inflex':
+        elif mode == 'Conweave':
+            return (1, 0)  # No fecmp_bg for Conweave
+        elif mode == 'Hybrid':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (2, bg)
-        return (3, bg)
+        elif mode == 'ECMP-Conweave':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (3, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (4, bg)
+        return (5, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -302,7 +312,25 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
     """Print queue length comparison table."""
-    sorted_keys = sorted(results.keys(), key=lambda x: (x.split('(')[0], int(x.split('(')[1].split(')')[0])))
+    # Sort using same key function as print_fct_table
+    def sort_key(x):
+        mode = x.split('(')[0]
+        if mode == 'ECMP':
+            return (0, 0)
+        elif mode == 'Conweave':
+            return (1, 0)  # No fecmp_bg for Conweave
+        elif mode == 'Hybrid':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (2, bg)
+        elif mode == 'ECMP-Conweave':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (3, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (4, bg)
+        return (5, 0)
+
+    sorted_keys = sorted(results.keys(), key=sort_key)
 
     # Find Hybrid(0) baseline
     baseline = results.get("Hybrid(0)")
@@ -338,11 +366,12 @@ def print_qlen_table(results: Dict[str, SimulationResult]):
 
 def print_summary(results: Dict[str, SimulationResult]):
     """Print summary analysis."""
-    print("\n" + "="*80)
+    print("\n" + "="*100)
     print("关键发现 (Key Findings)")
-    print("="*80)
+    print("="*100)
 
     ecmp = results.get("ECMP")
+    conweave = results.get("Conweave")
     hybrid_0 = results.get("Hybrid(0)")
     inflex_0 = results.get("Inflex(0)")
     hybrid_128 = results.get("Hybrid(128)")
@@ -350,52 +379,92 @@ def print_summary(results: Dict[str, SimulationResult]):
     hybrid_192 = results.get("Hybrid(192)")
     inflex_192 = results.get("Inflex(192)")
 
-    # ECMP comparison (if available)
-    if ecmp and hybrid_0:
-        avg_delta = ((hybrid_0.avg_fct - ecmp.avg_fct) / ecmp.avg_fct * 100)
-        print(f"• ECMP负载: Hybrid Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+    # Helper function to safely calculate percentage difference
+    def calc_pct_delta(new_val, base_val):
+        if base_val > 0:
+            return ((new_val - base_val) / base_val * 100)
+        return None
 
-    if ecmp and inflex_0:
-        avg_delta = ((inflex_0.avg_fct - ecmp.avg_fct) / ecmp.avg_fct * 100)
-        print(f"• ECMP负载: Inflex Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+    # ECMP comparison (if available and has data)
+    if ecmp and ecmp.avg_fct > 0:
+        if hybrid_0 and hybrid_0.avg_fct > 0:
+            avg_delta = calc_pct_delta(hybrid_0.avg_fct, ecmp.avg_fct)
+            print(f"• ECMP负载: Hybrid Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+        if conweave and conweave.avg_fct > 0:
+            avg_delta = calc_pct_delta(conweave.avg_fct, ecmp.avg_fct)
+            print(f"• ECMP负载: Conweave Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
+        if inflex_0 and inflex_0.avg_fct > 0:
+            avg_delta = calc_pct_delta(inflex_0.avg_fct, ecmp.avg_fct)
+            print(f"• ECMP负载: Inflex Avg {'优于' if avg_delta < 0 else '劣于'} ECMP {abs(avg_delta):.1f}%")
 
-    # Low load (0) comparison
-    if hybrid_0 and inflex_0:
-        avg_delta = ((inflex_0.avg_fct - hybrid_0.avg_fct) / hybrid_0.avg_fct * 100)
-        p50_delta = ((inflex_0.p50_fct - hybrid_0.p50_fct) / hybrid_0.p50_fct * 100)
-        print(f"• 低负载(0): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
-        print(f"• 低负载(0): Inflex P50 {'优于' if p50_delta < 0 else '劣于'} Hybrid {abs(p50_delta):.1f}%")
+    # Low load comparison - All modes
+    if hybrid_0 and conweave and hybrid_0.avg_fct > 0:
+        avg_delta = calc_pct_delta(conweave.avg_fct, hybrid_0.avg_fct)
+        if avg_delta is not None:
+            print(f"• 低负载: Conweave Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
+    if hybrid_0 and inflex_0 and hybrid_0.avg_fct > 0:
+        avg_delta = calc_pct_delta(inflex_0.avg_fct, hybrid_0.avg_fct)
+        if avg_delta is not None:
+            print(f"• 低负载: Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
+    if conweave and inflex_0 and conweave.avg_fct > 0:
+        avg_delta = calc_pct_delta(inflex_0.avg_fct, conweave.avg_fct)
+        if avg_delta is not None:
+            print(f"• 低负载: Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Conweave {abs(avg_delta):.1f}%")
 
-    # Medium load (128) comparison - NEW
-    if hybrid_128 and inflex_128:
-        avg_delta = ((inflex_128.avg_fct - hybrid_128.avg_fct) / hybrid_128.avg_fct * 100)
-        p99_delta = ((inflex_128.p99_fct - hybrid_128.p99_fct) / hybrid_128.p99_fct * 100)
-        print(f"• 中负载(128): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
-        print(f"• 中负载(128): Inflex P99 {'优于' if p99_delta < 0 else '劣于'} Hybrid {abs(p99_delta):.1f}%")
-
+    # Medium load (128) comparison
+    if hybrid_128 and inflex_128 and hybrid_128.avg_fct > 0:
+        avg_delta = calc_pct_delta(inflex_128.avg_fct, hybrid_128.avg_fct)
+        if avg_delta is not None:
+            print(f"• 中负载(128): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
     # High load (192) comparison
-    if hybrid_192 and inflex_192:
-        avg_delta = ((inflex_192.avg_fct - hybrid_192.avg_fct) / hybrid_192.avg_fct * 100)
-        p99_delta = ((inflex_192.p99_fct - hybrid_192.p99_fct) / hybrid_192.p99_fct * 100)
-        print(f"• 高负载(192): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
-        print(f"• 高负载(192): Inflex P99 {'优于' if p99_delta < 0 else '劣于'} Hybrid {abs(p99_delta):.1f}%")
+    if hybrid_192 and inflex_192 and hybrid_192.avg_fct > 0:
+        avg_delta = calc_pct_delta(inflex_192.avg_fct, hybrid_192.avg_fct)
+        if avg_delta is not None:
+            print(f"• 高负载(192): Inflex Avg {'优于' if avg_delta < 0 else '劣于'} Hybrid {abs(avg_delta):.1f}%")
 
-    # Timeout statistics
+    # Timeout statistics by mode
+    print("\n--- 超时重传统计 ---")
+    modes_to_compare = [("Hybrid", "Hybrid"), ("Conweave", "Conweave"), ("Inflex", "Inflex"),
+                        ("ECMP-Conweave", "ECMP-Conweave")]
+    for mode_key, mode_name in modes_to_compare:
+        total_to = sum(r.total_timeout for k, r in results.items() if mode_key in k)
+        if total_to > 0:
+            print(f"• {mode_name} 总超时: {total_to:,}")
+
+    # Compare timeout ratios
     total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k)
+    total_conweave_to = sum(r.total_timeout for k, r in results.items() if "Conweave" in k)
     total_inflex_to = sum(r.total_timeout for k, r in results.items() if "Inflex" in k)
+
+    if total_hybrid_to > 0 and total_conweave_to > 0:
+        to_ratio = total_conweave_to / total_hybrid_to
+        print(f"• Conweave vs Hybrid 超时比例: {to_ratio:.2f}x")
     if total_hybrid_to > 0 and total_inflex_to > 0:
         to_ratio = total_inflex_to / total_hybrid_to
-        print(f"• 超时重传: Inflex 总数 {total_inflex_to:,}, Hybrid 总数 {total_hybrid_to:,}, 比例 {to_ratio:.2f}x")
+        print(f"• Inflex vs Hybrid 超时比例: {to_ratio:.2f}x")
+    if total_conweave_to > 0 and total_inflex_to > 0:
+        to_ratio = total_inflex_to / total_conweave_to
+        print(f"• Inflex vs Conweave 超时比例: {to_ratio:.2f}x")
 
     # PFC comparison
+    print("\n--- PFC事件统计 ---")
+    for mode_key, mode_name in modes_to_compare:
+        total_pfc = sum(r.pfc_count for k, r in results.items() if mode_key in k)
+        if total_pfc > 0:
+            print(f"• {mode_name} 总PFC: {total_pfc:,}")
+
     total_hybrid_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid" in k)
+    total_conweave_pfc = sum(r.pfc_count for k, r in results.items() if "Conweave" in k)
     total_inflex_pfc = sum(r.pfc_count for k, r in results.items() if "Inflex" in k)
-    if total_hybrid_pfc > 0:
+
+    if total_hybrid_pfc > 0 and total_conweave_pfc > 0:
+        pfc_ratio = total_conweave_pfc / total_hybrid_pfc
+        print(f"• Conweave vs Hybrid PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc > 0 and total_inflex_pfc > 0:
         pfc_ratio = total_inflex_pfc / total_hybrid_pfc
-        print(f"• PFC事件: Inflex 是 Hybrid 的 {pfc_ratio:.2f}x")
+        print(f"• Inflex vs Hybrid PFC比例: {pfc_ratio:.2f}x")
 
-    print("="*80)
-
+    print("="*100)
     print("="*70)
 
 

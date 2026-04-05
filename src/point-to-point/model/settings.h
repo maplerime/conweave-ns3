@@ -36,6 +36,9 @@ namespace ns3 {
 
 #define SLB_DEBUG (false)
 
+// Debug flag for tag-based routing (Hybrid, Inflex, ECMP-Conweave modes)
+#define DEBUG_TAG_ROUTING (true)
+
 #define PARSE_FIVE_TUPLE(ch)                                                    \
     DEPARSE_FIVE_TUPLE(std::to_string(Settings::hostIp2IdMap[ch.sip]),          \
                        std::to_string(ch.udp.sport),                            \
@@ -137,6 +140,11 @@ class Settings {
 
     static uint32_t dropped_pkt_sw_ingress;
     static uint32_t dropped_pkt_sw_egress;
+
+    /* Tag routing statistics - for Hybrid/Inflex mode verification */
+    static uint64_t tag1_ecmp_count;    // tag=1 flows using ECMP
+    static uint64_t tag2_inflex_count;  // tag=2 flows using Inflex
+    static uint64_t tag2_drill_count;   // tag=2 flows using DRILL
 };
 
 }  // namespace ns3

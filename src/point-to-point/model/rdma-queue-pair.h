@@ -59,6 +59,7 @@ class RdmaQueuePair : public Object {
     uint64_t m_size;
     uint64_t snd_nxt, snd_una;  // next seq to send, the highest unacked seq
     uint16_t m_pg;
+    uint16_t m_tag;  // Tag field for flow classification (1=ECMP, 2=other)
     uint16_t m_ipid;
     uint32_t m_win;       // bound of on-the-fly packets
     uint64_t m_baseRtt;   // base RTT of this qp
@@ -149,6 +150,7 @@ class RdmaQueuePair : public Object {
     void SetVarWin(bool v);
     void SetFlowId(int32_t v);
     void SetTimeout(Time v);
+    void SetTag(uint16_t tag);
 
     uint64_t GetBytesLeft();
     uint32_t GetHash(void);

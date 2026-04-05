@@ -25,6 +25,11 @@ uint32_t Settings::packet_payload = 1000;
 uint32_t Settings::dropped_pkt_sw_ingress = 0;
 uint32_t Settings::dropped_pkt_sw_egress = 0;
 
+/* Tag routing statistics */
+uint64_t Settings::tag1_ecmp_count = 0;
+uint64_t Settings::tag2_inflex_count = 0;
+uint64_t Settings::tag2_drill_count = 0;
+
 /* for load balancer */
 std::map<uint32_t, uint32_t> Settings::hostIp2SwitchId;
 

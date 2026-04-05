@@ -192,9 +192,14 @@ struct FlowInput {
     uint32_t src, dst, pg, maxPacketCount, port;
     double start_time;
     uint32_t idx;
+    uint16_t tag;  // Tag field for flow classification (1=ECMP, 2=other)
 };
 FlowInput flow_input = {0};  // global variable
 uint32_t flow_num;
+
+// Tag flow statistics at creation time
+uint64_t tag1_flow_count = 0;  // Flows with tag=1 (ECMP)
+uint64_t tag2_flow_count = 0;  // Flows with tag=2 (DRILL/Inflex/ConWeave)
 
 /**
  * Read flow input from file "flowf"
@@ -202,7 +207,7 @@ uint32_t flow_num;
 void ReadFlowInput() {
     if (flow_input.idx < flow_num) {
         flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.maxPacketCount >>
-            flow_input.start_time;
+            flow_input.start_time >> flow_input.tag;
         assert(n.Get(flow_input.src)->GetNodeType() == 0 &&
                n.Get(flow_input.dst)->GetNodeType() == 0);
     } else {
@@ -276,8 +281,16 @@ void ScheduleFlowInputs(FILE *infile) {
         RdmaClientHelper clientHelper(
             pg, serverAddress[src], serverAddress[dst], sport, dport, target_len,
             has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
-            global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)]);
+            global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)],
+            flow_input.tag);
         clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
+
+        // Count flows by tag
+        if (flow_input.tag == 1) {
+            tag1_flow_count++;
+        } else if (flow_input.tag == 2) {
+            tag2_flow_count++;
+        }
 
         ApplicationContainer appCon = clientHelper.Install(n.Get(src));  // SRC
         appCon.Start(Seconds(Time(0)));
@@ -1928,6 +1941,26 @@ int main(int argc, char *argv[]) {
         std::cout << "Queue>60% triggered probes: " << SwitchNode::m_queueTriggeredProbeCount << std::endl;
         std::cout << "Total probes received: " << SwitchNode::m_totalProbeReceived << std::endl;
         std::cout << "========================" << std::endl;
+    }
+
+    // Output tag-based routing statistics for Hybrid and Inflex modes
+    if (Settings::lb_mode == 10 || Settings::lb_mode == 12) {
+        std::cout << "\n=== TAG ROUTING STATISTICS ===" << std::endl;
+        std::cout << "Mode: " << (Settings::lb_mode == 10 ? "Hybrid (lb_mode=10)" : "Inflex (lb_mode=12)") << std::endl;
+        std::cout << "--- Flow Creation ---" << std::endl;
+        std::cout << "tag=1 flows created: " << tag1_flow_count << std::endl;
+        std::cout << "tag=2 flows created: " << tag2_flow_count << std::endl;
+        std::cout << "--- Packet Routing ---" << std::endl;
+        std::cout << "tag=1 flows (ECMP): " << Settings::tag1_ecmp_count << " packets" << std::endl;
+        if (Settings::lb_mode == 10) {
+            std::cout << "tag=2 flows (DRILL): " << Settings::tag2_drill_count << " packets" << std::endl;
+        } else {
+            std::cout << "tag=2 flows (Inflex): " << Settings::tag2_inflex_count << " packets" << std::endl;
+        }
+        uint64_t total_tag_routed = Settings::tag1_ecmp_count +
+                                     (Settings::lb_mode == 10 ? Settings::tag2_drill_count : Settings::tag2_inflex_count);
+        std::cout << "Total tag-routed packets: " << total_tag_routed << std::endl;
+        std::cout << "=============================\n" << std::endl;
     }
 
     NS_LOG_INFO("Done.");

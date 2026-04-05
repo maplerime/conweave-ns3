@@ -107,6 +107,7 @@ public:
 		  // SeqTsHeader
 		  uint16_t pg;
 		  uint32_t seq;
+		  uint16_t tag;  // Tag field for flow classification
 		  IntHeader ih;
 	  } udp;
 	  // CnHeader

@@ -76,6 +76,7 @@ private:
   uint32_t m_win; // bound of on-the-fly packets
   uint64_t m_baseRtt; // base Rtt
   int32_t m_flow_id;
+  uint16_t m_tag;  // Tag field for flow classification (1=ECMP, 2=other)
 };
 
 } // namespace ns3

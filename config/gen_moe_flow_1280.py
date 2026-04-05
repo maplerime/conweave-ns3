@@ -2,7 +2,8 @@
 """
 Generate MoE flow file for 1280-node 5-pod topology
 - All flows use pg=3
-- tag=1 for background flows, tag=2 for expert flows
+- tag=1 for background flows (large flows, 8MB) → ECMP
+- tag=2 for expert flows (small flows, 8KB) → other mode
 
 Each group of 4 nodes acts like a multi-NIC host
 """
@@ -35,15 +36,15 @@ BG_FLOW_SIZE = 8 * 1024 * 1024  # 8MB per background flow
 
 # New parameters
 PG_VALUE = 3             # All flows use pg=3
-TAG_EXPERT = 2           # Expert flow tag
-TAG_BACKGROUND = 1       # Background flow tag
+TAG_EXPERT = 2           # Expert flow tag = other mode (small flows)
+TAG_BACKGROUND = 1       # Background flow tag = ECMP (large flows)
 
 # Timing
 BG_START_TIME = 2.0      # Background flows start at 2.0s
 ROUND_INTERVAL_US = 100  # 100us between rounds
 ROUND_TIME_US = 200      # Time for each round to complete
 
-random.seed(42)
+random.seed(88)
 
 # Helper: get group ID from node ID
 def node_to_group(node_id):
@@ -61,40 +62,14 @@ def get_group_nodes(group_id):
     start_node = pod * NODES_PER_POD + group_in_pod * GROUP_SIZE
     return [start_node + i for i in range(GROUP_SIZE)]
 
-# Select expert groups distributed across pods
+# Select expert groups randomly from all groups (not constrained by pod)
 all_groups = list(range(NUM_GROUPS))
-expert_group_ids = []
+expert_group_ids = random.sample(all_groups, EXPERT_GROUPS)
 
-# Distribute expert groups evenly across pods
-expert_per_pod = EXPERT_GROUPS // NUM_PODS  # 51 per pod
-expert_remainder = EXPERT_GROUPS % NUM_PODS  # 1 extra group
-
-for pod in range(NUM_PODS):
-    pod_groups = [g for g in all_groups if g // GROUPS_PER_POD == pod]
-    # Select expert groups for this pod
-    num_expert = expert_per_pod + (1 if pod < expert_remainder else 0)
-    pod_expert = random.sample(pod_groups, num_expert)
-    expert_group_ids.extend(pod_expert)
-
-expert_group_ids = sorted(expert_group_ids)
 remaining_groups = sorted([g for g in all_groups if g not in expert_group_ids])
 
-# Select receiver groups distributed across pods
-receiver_group_ids = []
-receivers_per_pod = RECEIVER_GROUPS // NUM_PODS  # 1 per pod
-receiver_remainder = RECEIVER_GROUPS % NUM_PODS  # 3 extra groups
-
-for pod in range(NUM_PODS):
-    pod_remaining = [g for g in remaining_groups if g // GROUPS_PER_POD == pod]
-    if not pod_remaining:
-        continue
-    # Select receiver groups for this pod
-    num_receivers = receivers_per_pod + (1 if pod < receiver_remainder else 0)
-    num_receivers = min(num_receivers, len(pod_remaining))
-    pod_receivers = random.sample(pod_remaining, num_receivers)
-    receiver_group_ids.extend(pod_receivers)
-
-receiver_group_ids = sorted(receiver_group_ids)
+# Select receiver groups randomly from remaining groups (not constrained by pod)
+receiver_group_ids = random.sample(remaining_groups, RECEIVER_GROUPS)
 
 # Remove receiver groups from remaining groups
 remaining_for_bg = sorted([g for g in remaining_groups if g not in receiver_group_ids])
@@ -103,29 +78,28 @@ print(f"Topology: {NUM_PODS} pods, {NODES_PER_POD} hosts per pod, {TOTAL_NODES} 
 print(f"Group structure: {NUM_GROUPS} groups total ({GROUPS_PER_POD} groups per pod), {GROUP_SIZE} nodes per group")
 print()
 print(f"All flows use pg={PG_VALUE}, tag={TAG_EXPERT}(expert) or {TAG_BACKGROUND}(background)")
-print()
-print(f"Expert Groups: {len(expert_group_ids)} groups")
+print(f"Expert Groups: {len(expert_group_ids)} groups (randomly selected)")
 
 # Show pod distribution for expert groups
 expert_pod_dist = {}
 for pod in range(NUM_PODS):
     pod_expert = [g for g in expert_group_ids if g // GROUPS_PER_POD == pod]
     expert_pod_dist[pod] = len(pod_expert)
-print(f"  Distribution per pod: {expert_pod_dist}")
+print(f"  Random pod distribution: {expert_pod_dist}")
 
-print(f"Receiver Groups: {receiver_group_ids}")
+print(f"Receiver Groups: {RECEIVER_GROUPS} groups (randomly selected from remaining)")
 receiver_pod_dist = {}
 for pod in range(NUM_PODS):
     pod_receivers = [g for g in receiver_group_ids if g // GROUPS_PER_POD == pod]
     receiver_pod_dist[pod] = len(pod_receivers) if pod_receivers else 0
-print(f"  Distribution per pod: {receiver_pod_dist}")
+print(f"  Random pod distribution: {receiver_pod_dist}")
 
 print(f"Remaining Groups (for background): {len(remaining_for_bg)} groups")
 bg_pod_dist = {}
 for pod in range(NUM_PODS):
     pod_bg = [g for g in remaining_for_bg if g // GROUPS_PER_POD == pod]
     bg_pod_dist[pod] = len(pod_bg)
-print(f"  Distribution per pod: {bg_pod_dist}")
+print(f"  Random pod distribution: {bg_pod_dist}")
 print()
 
 # Convert groups to node ID lists
@@ -170,7 +144,7 @@ for round_id in range(ROUNDS):
                     continue  # Skip self-flow
                 pg = PG_VALUE  # All flows use pg=3
                 tag = TAG_EXPERT  # Expert flow tag
-                moe_lines.append(f"{src} {dst} {pg} {tag} {MOE_FLOW_SIZE} {moe_start_time:.9f}\n")
+                moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f} {tag}\n")
 
 total_moe_flows = len(moe_lines)
 moe_traffic = total_moe_flows * MOE_FLOW_SIZE
@@ -195,7 +169,7 @@ for idx, src in enumerate(bg_sender_pool):
     dst = random.choice(dst_candidates)
     pg = PG_VALUE  # All flows use pg=3
     tag = TAG_BACKGROUND  # Background flow tag
-    bg_flow_pool.append(f"{src} {dst} {pg} {tag} {BG_FLOW_SIZE} {BG_START_TIME:.9f}\n")
+    bg_flow_pool.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {tag}\n")
 
 print(f"Background flow pool generated: {len(bg_flow_pool)} flows")
 print(f"  - First 64 flows will be used for fecmp=64")
@@ -219,20 +193,20 @@ for FECMP_BG_COUNT in FECMP_BG_VALUES:
 
     # Count pg values and tag values
     bg_pg_3 = sum(1 for line in bg_lines if int(line.split()[2]) == PG_VALUE)
-    bg_tag_1 = sum(1 for line in bg_lines if int(line.split()[3]) == TAG_BACKGROUND)
+    bg_tag_1 = sum(1 for line in bg_lines if int(line.split()[5]) == TAG_BACKGROUND)
     moe_pg_3 = sum(1 for line in moe_lines if int(line.split()[2]) == PG_VALUE)
-    moe_tag_2 = sum(1 for line in moe_lines if int(line.split()[3]) == TAG_EXPERT)
+    moe_tag_2 = sum(1 for line in moe_lines if int(line.split()[5]) == TAG_EXPERT)
 
     print(f"\nFlow statistics:")
     if total_bg_flows > 0:
         print(f"Background flows: {total_bg_flows} ({bg_traffic / 1024 / 1024:.1f} MB)")
-        print(f"  - pg={PG_VALUE}: {bg_pg_3}, tag={TAG_BACKGROUND}: {bg_tag_1}")
+        print(f"  - pg={PG_VALUE}: {bg_pg_3}, tag={TAG_BACKGROUND}(ECMP): {bg_tag_1}")
     print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
     print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
-    print(f"  - pg={PG_VALUE}: {moe_pg_3}, tag={TAG_EXPERT}: {moe_tag_2}")
+    print(f"  - pg={PG_VALUE}: {moe_pg_3}, tag={TAG_EXPERT}(other): {moe_tag_2}")
     print(f"Total traffic: {total_traffic / 1024 / 1024:.1f} MB")
     print(f"MoE ratio: {moe_traffic / total_traffic * 100:.1f}%")
-    print(f"Background ratio: {bg_traffic / total_traffic * 100:.1f}%")
+    print(f"Background vs MoE: {bg_traffic / moe_traffic * 100:.1f}%")
 
     # Write flow file - background flows first, then MoE flows
     if FECMP_BG_COUNT > 0:

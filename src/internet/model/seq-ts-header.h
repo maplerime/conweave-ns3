@@ -54,6 +54,9 @@ public:
   void SetPG (uint16_t pg);
   uint16_t GetPG () const;
 
+  void SetTag (uint16_t tag);
+  uint16_t GetTag () const;
+
   static TypeId GetTypeId (void);
   virtual TypeId GetInstanceTypeId (void) const;
   virtual void Print (std::ostream &os) const;
@@ -65,6 +68,7 @@ private:
 
   uint32_t m_seq;
   uint16_t m_pg;
+  uint16_t m_tag;  // Tag field for flow classification (e.g., 1=ECMP, 2=other)
 public:
   IntHeader ih;
 };

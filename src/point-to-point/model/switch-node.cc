@@ -2,6 +2,7 @@
 
 #include "assert.h"
 #include "ns3/boolean.h"
+#include "ns3/channel.h"
 #include "ns3/conweave-routing.h"
 #include "ns3/double.h"
 #include "ns3/flow-id-tag.h"
@@ -242,14 +243,14 @@ void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch) {
         return;
     }
 
-    // ECMP-Conweave hybrid (lb_mode=11): pg==2 uses ConWeave, others use ECMP
+    // ECMP-Conweave hybrid (lb_mode=11): tag==2 uses ConWeave, others use ECMP
     if (Settings::lb_mode == 11) {
         bool control_pkt = (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
-        if (!control_pkt && ch.udp.pg == 2) {
+        if (!control_pkt && ch.udp.tag == 2) {
             m_mmu->m_conweaveRouting.RouteInput(p, ch);
             return;
         }
-        // pg!=2 or control_pkt: fall through to SendToDevContinue -> GetOutDev -> ECMP
+        // tag!=2 or control_pkt: fall through to SendToDevContinue -> GetOutDev -> ECMP
     }
 
     // Others
@@ -321,15 +322,23 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     bool control_pkt =
         (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
 
-    // Hybrid mode (lb_mode=10): use pg field to determine per-flow load balancing
+    // Hybrid mode (lb_mode=10): use tag field to determine per-flow load balancing
     if (Settings::lb_mode == 10) {
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // pg == 2 -> DRILL, otherwise -> FlowECMP
-        if (ch.udp.pg == 2) {
+        // tag == 2 -> DRILL, otherwise -> FlowECMP
+        if (ch.udp.tag == 2) {
+            Settings::tag2_drill_count++;
+#if (DEBUG_TAG_ROUTING == true)
+            std::cout << "[Hybrid] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
+#endif
             return DoLbDrill(p, ch, nexthops);
         }
+        Settings::tag1_ecmp_count++;
+#if (DEBUG_TAG_ROUTING == true)
+        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+#endif
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
@@ -344,9 +353,13 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // pg == 2 -> Inflex with queue monitoring, otherwise -> FlowECMP
-        if (ch.udp.pg == 2) {
+        // tag == 2 -> Inflex with queue monitoring, otherwise -> FlowECMP
+        if (ch.udp.tag == 2) {
             // Use Inflex path selection
+            Settings::tag2_inflex_count++;
+#if (DEBUG_TAG_ROUTING == true)
+            std::cout << "[Inflex] tag=" << ch.udp.tag << " using Inflex (total=" << Settings::tag2_inflex_count << ")" << std::endl;
+#endif
             if (m_switchType == SWITCH_TYPE_TOR) {
                 return SelectInflexUplink(p, ch, nexthops);
             } else if (m_switchType == SWITCH_TYPE_CORE) {
@@ -356,6 +369,10 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
             }
             return DoLbFlowECMP(p, ch, nexthops);
         }
+        Settings::tag1_ecmp_count++;
+#if (DEBUG_TAG_ROUTING == true)
+        std::cout << "[Inflex] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+#endif
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
@@ -584,22 +601,29 @@ void SwitchNode::SendProbeToPortInternal(uint32_t port, uint64_t rateLimitNs) {
         return;
     }
 
-    // For ToR switches, skip host ports
-    if (m_switchType == SWITCH_TYPE_TOR) {
-        uint32_t nSwitchPorts = 20;
-        if (port >= nSwitchPorts) {
-            return;
-        }
-    }
-
     Ptr<NetDevice> dev = GetDevice(port);
     if (!dev || !dev->IsLinkUp()) {
         return;
     }
 
+    // For ToR switches, check if connected to a host using topology
     Ptr<QbbNetDevice> qbbDev = DynamicCast<QbbNetDevice>(dev);
     if (!qbbDev) {
         return;
+    }
+
+    if (m_switchType == SWITCH_TYPE_TOR) {
+        Ptr<Channel> channel = qbbDev->GetChannel();
+        if (channel) {
+            // Get the device at the other end of the channel
+            Ptr<NetDevice> remoteDev = channel->GetDevice(0);
+            if (remoteDev && remoteDev->GetNode()) {
+                // Check if remote node is a host (nodeType == 0)
+                if (remoteDev->GetNode()->GetNodeType() == 0) {
+                    return;  // Skip host ports
+                }
+            }
+        }
     }
 
     // Rate limiting (skip if rateLimitNs > 0 and not enough time passed)

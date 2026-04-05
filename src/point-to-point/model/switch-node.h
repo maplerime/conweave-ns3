@@ -104,9 +104,15 @@ class SwitchNode : public Node {
     static uint32_t m_inflexCallCount;
     static uint32_t m_inflexEcmpFallbackCount;
 
+    // Probe statistics
+    static uint64_t m_pfcTriggeredProbeCount;   // Probes triggered by PFC change
+    static uint64_t m_queueTriggeredProbeCount; // Probes triggered by queue>60%
+    static uint64_t m_totalProbeSent;           // Total probes sent
+    static uint64_t m_totalProbeReceived;       // Total probes received
+
     // Probe generation - event driven (PFC change or queue occupancy > 60%)
     static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
-    static const uint64_t PROBE_RATE_LIMIT_NS = 16000;     // 16us minimum between probes
+    static const uint64_t PROBE_RATE_LIMIT_NS = 5000;      // 5us minimum between probes
 
     // Queue monitoring methods
     void StartProbeGeneration();

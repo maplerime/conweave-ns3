@@ -1922,6 +1922,11 @@ int main(int argc, char *argv[]) {
             double fallbackPercent = 100.0 * SwitchNode::m_inflexEcmpFallbackCount / SwitchNode::m_inflexCallCount;
             std::cout << "Fallback rate: " << fallbackPercent << "%" << std::endl;
         }
+        std::cout << "--- Probe Statistics ---" << std::endl;
+        std::cout << "Total probes sent: " << SwitchNode::m_totalProbeSent << std::endl;
+        std::cout << "PFC triggered probes: " << SwitchNode::m_pfcTriggeredProbeCount << std::endl;
+        std::cout << "Queue>60% triggered probes: " << SwitchNode::m_queueTriggeredProbeCount << std::endl;
+        std::cout << "Total probes received: " << SwitchNode::m_totalProbeReceived << std::endl;
         std::cout << "========================" << std::endl;
     }
 

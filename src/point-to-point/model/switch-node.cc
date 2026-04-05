@@ -60,6 +60,10 @@ SwitchNode::SwitchNode() {
 // Initialize static members
 uint32_t SwitchNode::m_inflexCallCount = 0;
 uint32_t SwitchNode::m_inflexEcmpFallbackCount = 0;
+uint64_t SwitchNode::m_pfcTriggeredProbeCount = 0;
+uint64_t SwitchNode::m_queueTriggeredProbeCount = 0;
+uint64_t SwitchNode::m_totalProbeSent = 0;
+uint64_t SwitchNode::m_totalProbeReceived = 0;
 
 /**
  * @brief Load Balancing
@@ -643,11 +647,22 @@ void SwitchNode::SendProbeToPortInternal(uint32_t port, uint64_t rateLimitNs) {
     ch.getInt = 0;
     p->PeekHeader(ch);
 
+    // Update probe statistics
+    m_totalProbeSent++;
+    if (rateLimitNs == 0) {
+        m_pfcTriggeredProbeCount++;  // Immediate probe = PFC triggered
+    } else {
+        m_queueTriggeredProbeCount++;  // Rate-limited probe = Queue triggered
+    }
+
     // Send via SwitchSend with queue 0
     qbbDev->SwitchSend(0, p, ch);
 }
 
 void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
+    // Update probe statistics
+    m_totalProbeReceived++;
+
     // Remove headers in reverse order: PPP -> IPv4 -> QueueMonitor
     PppHeader ppp;
     p->RemoveHeader(ppp);
@@ -742,7 +757,7 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
     };
     std::vector<PathOption> pathOptions;
 
-    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
@@ -812,7 +827,7 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
     };
     std::vector<PathOption> pathOptions;
 
-    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
@@ -883,7 +898,7 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
     };
     std::vector<PathOption> pathOptions;
 
-    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 

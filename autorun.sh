@@ -68,12 +68,12 @@ python3 run.py --lb conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload $
 sleep 0.1
 
 # ECMP-Conweave mode
-#cecho "GREEN" "\n----------------------------------"
-#cecho "GREEN" "Run ECMP-Conweave experiment..."
-#FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
-#cecho "YELLOW" "Running: lb=ecmp-conweave, flow: ${FLOW_FILE}"
-#python3 run.py --lb ecmp-conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
-#sleep 0.1
+cecho "GREEN" "\n----------------------------------"
+cecho "GREEN" "Run ECMP-Conweave experiment..."
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+cecho "YELLOW" "Running: lb=ecmp-conweave, flow: ${FLOW_FILE}"
+python3 run.py --lb ecmp-conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --flow_file ${FLOW_FILE} 2>&1 > /dev/null &
+sleep 0.1
 
 # Inflex mode with different fecmp_bg levels
 cecho "GREEN" "\n----------------------------------"

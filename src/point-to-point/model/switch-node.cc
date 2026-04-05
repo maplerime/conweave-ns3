@@ -238,6 +238,16 @@ void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch) {
         return;
     }
 
+    // ECMP-Conweave hybrid (lb_mode=11): pg==2 uses ConWeave, others use ECMP
+    if (Settings::lb_mode == 11) {
+        bool control_pkt = (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
+        if (!control_pkt && ch.udp.pg == 2) {
+            m_mmu->m_conweaveRouting.RouteInput(p, ch);
+            return;
+        }
+        // pg!=2 or control_pkt: fall through to SendToDevContinue -> GetOutDev -> ECMP
+    }
+
     // Others
     SendToDevContinue(p, ch);
 }
@@ -320,14 +330,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing
+    // Simplified: all use ECMP directly
     if (Settings::lb_mode == 11) {
-        if (control_pkt) {
-            return DoLbFlowECMP(p, ch, nexthops);
-        }
-        // pg == 2 -> Conweave, otherwise -> FlowECMP
-        if (ch.udp.pg == 2) {
-            return DoLbConWeave(p, ch, nexthops);
-        }
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
@@ -738,9 +742,7 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
     };
     std::vector<PathOption> pathOptions;
 
-    // PFC penalty constant - multiplied by PFC count
-    const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
-    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
@@ -779,9 +781,8 @@ int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::v
             remotePfcCount = itPfc->second;
         }
 
-        // Calculate path cost: local_tx_queue + remote_rx_queue + pfc_count * pfc_penalty
-        uint64_t pfcPenalty = remotePfcCount * PFC_PENALTY;
-        uint64_t pathCost = localTxQueue + remoteRxQueueLen + pfcPenalty;
+        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
 
         PathOption opt;
         opt.port = port;
@@ -811,9 +812,7 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
     };
     std::vector<PathOption> pathOptions;
 
-    // PFC penalty constant - multiplied by PFC count
-    const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
-    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
@@ -852,9 +851,8 @@ int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std:
             remotePfcCount = itPfc->second;
         }
 
-        // Calculate path cost: local_tx_queue + remote_rx_queue + pfc_count * pfc_penalty
-        uint64_t pfcPenalty = remotePfcCount * PFC_PENALTY;
-        uint64_t pathCost = localTxQueue + remoteRxQueueLen + pfcPenalty;
+        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
 
         PathOption opt;
         opt.port = port;
@@ -885,9 +883,7 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
     };
     std::vector<PathOption> pathOptions;
 
-    // PFC penalty constant - multiplied by PFC count
-    const uint64_t PFC_PENALTY = 10000000;  // 10MB equivalent per PFC
-    const uint64_t PROBE_MAX_AGE = 20000;    // 20us: max age of probe info
+    const uint64_t PROBE_MAX_AGE = 16000;    // 16us: max age of probe info
 
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
@@ -946,9 +942,8 @@ int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const st
             }
         }
 
-        // Calculate path cost: local_tx_queue + remote_rx_queue + pfc_count * pfc_penalty
-        uint64_t pfcPenalty = remotePfcCount * PFC_PENALTY;
-        uint64_t pathCost = localTxQueue + remoteRxQueueLen + pfcPenalty;
+        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
 
         PathOption opt;
         opt.port = port;

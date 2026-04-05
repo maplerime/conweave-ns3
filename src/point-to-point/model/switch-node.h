@@ -106,7 +106,7 @@ class SwitchNode : public Node {
 
     // Probe generation - event driven (PFC change or queue occupancy > 60%)
     static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
-    static const uint64_t PROBE_RATE_LIMIT_NS = 20000;     // 20us minimum between probes
+    static const uint64_t PROBE_RATE_LIMIT_NS = 16000;     // 16us minimum between probes
 
     // Queue monitoring methods
     void StartProbeGeneration();

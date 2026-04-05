@@ -29,6 +29,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <unordered_map>
 
 #include "ns3/applications-module.h"
@@ -203,11 +204,34 @@ uint64_t tag2_flow_count = 0;  // Flows with tag=2 (DRILL/Inflex/ConWeave)
 
 /**
  * Read flow input from file "flowf"
+ * Handles both formats: with and without tag column (defaults to 0 if missing)
  */
 void ReadFlowInput() {
     if (flow_input.idx < flow_num) {
-        flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.maxPacketCount >>
-            flow_input.start_time >> flow_input.tag;
+        std::string line;
+        // Read the entire line (skip empty lines)
+        while (std::getline(flowf, line)) {
+            // Skip empty lines
+            if (line.empty() || line.find_first_not_of(" \t\r\n") == std::string::npos) {
+                continue;
+            }
+            std::istringstream iss(line);
+            // Try to read 6 columns (with tag)
+            if (iss >> flow_input.src >> flow_input.dst >> flow_input.pg >>
+                   flow_input.maxPacketCount >> flow_input.start_time >> flow_input.tag) {
+                // Successfully read 6 columns with tag
+                break;
+            } else {
+                // Failed, try 5 columns (old format without tag)
+                iss.clear();
+                iss.str(line);
+                if (iss >> flow_input.src >> flow_input.dst >> flow_input.pg >>
+                       flow_input.maxPacketCount >> flow_input.start_time) {
+                    flow_input.tag = 0;  // Default tag for old format
+                    break;
+                }
+            }
+        }
         assert(n.Get(flow_input.src)->GetNodeType() == 0 &&
                n.Get(flow_input.dst)->GetNodeType() == 0);
     } else {

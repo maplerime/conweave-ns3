@@ -133,18 +133,17 @@ for round_id in range(ROUNDS):
     round_receiver_groups = random.sample(receiver_groups_nodes, 2)
 
     for expert_group in expert_groups_nodes:
-        # 4 nodes in expert group sequentially send to 4 nodes in each receiver group
+        # 4 nodes in expert group send to 4 nodes in each receiver group (round-robin/all-to-all)
         for receiver_group in round_receiver_groups:
-            # One-to-one: 4 flows
-            for i in range(GROUP_SIZE):
-                src = expert_group[i]
-                dst = receiver_group[i]
-                # Ensure src != dst
-                if src == dst:
-                    continue  # Skip self-flow
-                pg = PG_VALUE  # All flows use pg=3
-                tag = TAG_EXPERT  # Expert flow tag
-                moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f} {tag}\n")
+            # All-to-all: each expert node sends to each receiver node
+            for src in expert_group:
+                for dst in receiver_group:
+                    # Ensure src != dst
+                    if src == dst:
+                        continue  # Skip self-flow
+                    pg = PG_VALUE  # All flows use pg=3
+                    tag = TAG_EXPERT  # Expert flow tag
+                    moe_lines.append(f"{src} {dst} {pg} {MOE_FLOW_SIZE} {moe_start_time:.9f} {tag}\n")
 
 total_moe_flows = len(moe_lines)
 moe_traffic = total_moe_flows * MOE_FLOW_SIZE

@@ -327,8 +327,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // tag == 2 -> DRILL, otherwise -> FlowECMP
-        if (ch.udp.tag == 2) {
+        // tag == 0 (no tag) or tag == 2 -> DRILL, tag == 1 -> FlowECMP
+        if (ch.udp.tag == 0 || ch.udp.tag == 2) {
             Settings::tag2_drill_count++;
 #if (DEBUG_TAG_ROUTING == true)
             std::cout << "[Hybrid] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
@@ -353,8 +353,8 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // tag == 2 -> Inflex with queue monitoring, otherwise -> FlowECMP
-        if (ch.udp.tag == 2) {
+        // tag == 0 (no tag) or tag == 2 -> Inflex with queue monitoring, tag == 1 -> FlowECMP
+        if (ch.udp.tag == 0 || ch.udp.tag == 2) {
             // Use Inflex path selection
             Settings::tag2_inflex_count++;
 #if (DEBUG_TAG_ROUTING == true)
@@ -772,235 +772,115 @@ void SwitchNode::ProcessProbePacket(Ptr<Packet> p, uint32_t inDev) {
  *     Inflex Path Selection Implementation *
  *******************************************/
 
-int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    m_inflexCallCount++;
+// Helper function to get local queue bytes for a port
+static uint32_t GetLocalQueueBytes(Ptr<NetDevice> dev) {
+    Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
+    if (qbb) {
+        return qbb->GetQueue()->GetNBytesTotal();
+    }
+    return 0;
+}
 
-    struct PathOption {
-        int port;
-        uint64_t cost;  // Combined cost metric
-    };
-    std::vector<PathOption> pathOptions;
+// Helper function to get remote info and check probe age
+static void GetRemoteInfo(uint64_t currentTime, uint32_t port,
+                          const std::map<uint32_t, uint64_t>& probeTimestamp,
+                          std::map<uint32_t, uint32_t>& rxQueueLen,
+                          const std::map<uint32_t, uint32_t>& pfcPortCount,
+                          uint32_t& remoteRxQueueLen, uint32_t& remotePfcCount,
+                          const uint64_t PROBE_MAX_AGE) {
+    auto itTimestamp = probeTimestamp.find(port);
+    if (itTimestamp != probeTimestamp.end()) {
+        if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+            rxQueueLen[port] = 0;  // Probe info is stale
+        }
+    }
+    auto it = rxQueueLen.find(port);
+    if (it != rxQueueLen.end()) {
+        remoteRxQueueLen = it->second;
+    }
+    auto itPfc = pfcPortCount.find(port);
+    if (itPfc != pfcPortCount.end()) {
+        remotePfcCount = itPfc->second;
+    }
+}
 
-    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
+// Unified Inflex path selection: find port with minimum path cost
+// pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1)
+static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
+                            const std::vector<int> &nexthops,
+                            const std::map<uint32_t, uint64_t>* uplinkProbeTimestamp,
+                            std::map<uint32_t, uint32_t>* uplinkRxQueueLen,
+                            const std::map<uint32_t, uint32_t>* uplinkPfcPortCount,
+                            const std::map<uint32_t, uint64_t>* downlinkProbeTimestamp,
+                            std::map<uint32_t, uint32_t>* downlinkRxQueueLen,
+                            const std::map<uint32_t, uint32_t>* downlinkPfcPortCount,
+                            bool useUplinkInfo, bool useDownlinkInfo, int splitPort) {
+    node->m_inflexCallCount++;
 
+    const uint64_t PROBE_MAX_AGE = 10000;  // 10us
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
-    // For each output port (to Agg), calculate path cost
-    for (int port : nexthops) {
-        // Get local ToR→Agg tx queue length for this port
-        uint32_t localTxQueue = 0;
-        Ptr<NetDevice> dev = GetDevice(port);
-        Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
-        if (qbb) {
-            for (uint32_t q = 0; q < 8; q++) {
-                localTxQueue += qbb->GetQueue()->GetNBytes(q);
-            }
-        }
+    int bestPort = nexthops[0];
+    uint64_t minCost = std::numeric_limits<uint64_t>::max();
 
-        // Get remote queue length and PFC count from Agg (received via probe)
+    for (int port : nexthops) {
+        // Get local tx queue length
+        Ptr<NetDevice> dev = node->GetDevice(port);
+        uint32_t localTxQueue = GetLocalQueueBytes(dev);
+
+        // Get remote queue length and PFC count
         uint32_t remoteRxQueueLen = 0;
         uint32_t remotePfcCount = 0;
 
-        // Check if probe info is stale (> 20us), if so, clear rxQueueLen
-        auto itTimestamp = m_remoteProbeTimestamp.find(port);
-        if (itTimestamp != m_remoteProbeTimestamp.end()) {
-            if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
-                // Probe info is stale, clear rxQueueLen
-                m_remoteRxQueueLen[port] = 0;
-            }
+        bool checkUplink = useUplinkInfo;
+        bool checkDownlink = useDownlinkInfo;
+
+        // For Agg: determine direction by port number
+        if (useUplinkInfo && useDownlinkInfo && splitPort >= 0) {
+            checkUplink = (static_cast<uint32_t>(port) > static_cast<uint32_t>(splitPort));
+            checkDownlink = !checkUplink;
         }
 
-        auto it = m_remoteRxQueueLen.find(port);
-        if (it != m_remoteRxQueueLen.end()) {
-            remoteRxQueueLen = it->second;
+        if (checkUplink && uplinkProbeTimestamp) {
+            GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *uplinkProbeTimestamp, *uplinkRxQueueLen,
+                         *uplinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
+        } else if (checkDownlink && downlinkProbeTimestamp) {
+            GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *downlinkProbeTimestamp, *downlinkRxQueueLen,
+                         *downlinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
         }
 
-        auto itPfc = m_remotePfcPortCount.find(port);
-        if (itPfc != m_remotePfcPortCount.end()) {
-            remotePfcCount = itPfc->second;
-        }
-
-        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
+        // Calculate path cost: local + remote weighted by PFC
         uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
 
-        PathOption opt;
-        opt.port = port;
-        opt.cost = pathCost;
-        pathOptions.push_back(opt);
+        if (pathCost < minCost) {
+            minCost = pathCost;
+            bestPort = port;
+        }
     }
 
-    if (pathOptions.empty()) {
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
+    return bestPort;
+}
 
-    // Select path with minimum cost
-    auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
-        [](const PathOption& a, const PathOption& b) {
-            return a.cost < b.cost;
-        });
-
-    return best->port;
+int SwitchNode::SelectInflexUplink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
+    return SelectInflexPath(this, p, ch, nexthops,
+                           &m_uplinkProbeTimestamp, &m_uplinkRxQueueLen, &m_uplinkPfcPortCount,
+                           nullptr, nullptr, nullptr,
+                           true, false, -1);
 }
 
 int SwitchNode::SelectInflexDownlink(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Core selects downlink port: Core -> Agg using path cost metric
-
-    struct PathOption {
-        int port;
-        uint64_t cost;  // Combined cost metric
-    };
-    std::vector<PathOption> pathOptions;
-
-    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
-
-    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
-
-    // For each output port (to Agg), calculate path cost
-    for (int port : nexthops) {
-        // Get local Core→Agg tx queue length for this port
-        uint32_t localTxQueue = 0;
-        Ptr<NetDevice> dev = GetDevice(port);
-        Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
-        if (qbb) {
-            for (uint32_t q = 0; q < 8; q++) {
-                localTxQueue += qbb->GetQueue()->GetNBytes(q);
-            }
-        }
-
-        // Get remote queue length and PFC count from Agg (received via probe)
-        uint32_t remoteRxQueueLen = 0;
-        uint32_t remotePfcCount = 0;
-
-        // Check if probe info is stale (> 20us), if so, clear rxQueueLen
-        auto itTimestamp = m_remoteProbeTimestamp.find(port);
-        if (itTimestamp != m_remoteProbeTimestamp.end()) {
-            if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
-                // Probe info is stale, clear rxQueueLen
-                m_remoteRxQueueLen[port] = 0;
-            }
-        }
-
-        auto it = m_remoteRxQueueLen.find(port);
-        if (it != m_remoteRxQueueLen.end()) {
-            remoteRxQueueLen = it->second;
-        }
-
-        auto itPfc = m_remotePfcPortCount.find(port);
-        if (itPfc != m_remotePfcPortCount.end()) {
-            remotePfcCount = itPfc->second;
-        }
-
-        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
-        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
-
-        PathOption opt;
-        opt.port = port;
-        opt.cost = pathCost;
-        pathOptions.push_back(opt);
-    }
-
-    if (pathOptions.empty()) {
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
-
-    // Select path with minimum cost
-    auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
-        [](const PathOption& a, const PathOption& b) {
-            return a.cost < b.cost;
-        });
-
-    return best->port;
+    return SelectInflexPath(this, p, ch, nexthops,
+                           nullptr, nullptr, nullptr,
+                           &m_downlinkProbeTimestamp, &m_downlinkRxQueueLen, &m_downlinkPfcPortCount,
+                           false, true, -1);
 }
 
 int SwitchNode::SelectInflexAggForward(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
-    // Agg selects path using cost metric (same as ToR and Core)
     uint32_t midPort = GetNDevices() / 2;
-
-    struct PathOption {
-        int port;
-        uint64_t cost;  // Combined cost metric
-    };
-    std::vector<PathOption> pathOptions;
-
-    const uint64_t PROBE_MAX_AGE = 5000;     // 5us: max age of probe info
-
-    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
-
-    // For each output port, calculate path cost
-    for (int port : nexthops) {
-        // Get local tx queue length for this port
-        uint32_t localTxQueue = 0;
-        Ptr<NetDevice> dev = GetDevice(port);
-        Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
-        if (qbb) {
-            for (uint32_t q = 0; q < 8; q++) {
-                localTxQueue += qbb->GetQueue()->GetNBytes(q);
-            }
-        }
-
-        // Determine if this is uplink (to Core) or downlink (to ToR)
-        bool isUplink = (port > midPort);
-
-        // Get remote queue length and PFC count based on direction
-        uint32_t remoteRxQueueLen = 0;
-        uint32_t remotePfcCount = 0;
-
-        if (isUplink) {
-            // To Core: use uplink storage, check timestamp
-            auto itTimestamp = m_uplinkProbeTimestamp.find(port);
-            if (itTimestamp != m_uplinkProbeTimestamp.end()) {
-                if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
-                    // Probe info is stale, clear rxQueueLen
-                    m_uplinkRxQueueLen[port] = 0;
-                }
-            }
-            auto it = m_uplinkRxQueueLen.find(port);
-            if (it != m_uplinkRxQueueLen.end()) {
-                remoteRxQueueLen = it->second;
-            }
-            auto itPfc = m_uplinkPfcPortCount.find(port);
-            if (itPfc != m_uplinkPfcPortCount.end()) {
-                remotePfcCount = itPfc->second;
-            }
-        } else {
-            // To ToR: use downlink storage, check timestamp
-            auto itTimestamp = m_downlinkProbeTimestamp.find(port);
-            if (itTimestamp != m_downlinkProbeTimestamp.end()) {
-                if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
-                    // Probe info is stale, clear rxQueueLen
-                    m_downlinkRxQueueLen[port] = 0;
-                }
-            }
-            auto it = m_downlinkRxQueueLen.find(port);
-            if (it != m_downlinkRxQueueLen.end()) {
-                remoteRxQueueLen = it->second;
-            }
-            auto itPfc = m_downlinkPfcPortCount.find(port);
-            if (itPfc != m_downlinkPfcPortCount.end()) {
-                remotePfcCount = itPfc->second;
-            }
-        }
-
-        // Calculate path cost: local + (remote + 8192) * (pfc + 1)
-        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
-
-        PathOption opt;
-        opt.port = port;
-        opt.cost = pathCost;
-        pathOptions.push_back(opt);
-    }
-
-    if (pathOptions.empty()) {
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
-
-    // Select path with minimum cost
-    auto best = std::min_element(pathOptions.begin(), pathOptions.end(),
-        [](const PathOption& a, const PathOption& b) {
-            return a.cost < b.cost;
-        });
-
-    return best->port;
+    return SelectInflexPath(this, p, ch, nexthops,
+                           &m_uplinkProbeTimestamp, &m_uplinkRxQueueLen, &m_uplinkPfcPortCount,
+                           &m_downlinkProbeTimestamp, &m_downlinkRxQueueLen, &m_downlinkPfcPortCount,
+                           true, true, midPort);
 }
 
 int SwitchNode::GetPortToSwitch(uint32_t switchId) {

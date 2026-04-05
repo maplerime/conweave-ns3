@@ -12,7 +12,7 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
 
 cecho "GREEN" "Running Hybrid MoE Experiments (4 different fecmp_bg levels)"
 
-TOPOLOGY="fat_k16_5pods_256perPod_100G_400G_OS1" # k=16, 5pods, 256/pod, 1280 hosts
+TOPOLOGY="fat_k16_5pods_256perPod_100G_400G_OS1" # k=8, 5pods, 256/pod, 1280 hosts
 NETLOAD="50" # network load 50%
 RUNTIME="0.05" # 0.05 seconds
 

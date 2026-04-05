@@ -42,6 +42,9 @@ class SimulationResult:
         # PFC count
         self.pfc_count = 0
 
+        # Total flows count
+        self.total_flows = 0
+
         # Timeout/Retransmission count
         self.total_timeout = 0
         self.avg_timeout = 0.0
@@ -84,7 +87,7 @@ def calculate_percentiles(data) -> Tuple[float, float]:
     return float(sorted_data[p50_idx]), float(sorted_data[p99_idx])
 
 
-def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int]:
+def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int, int]:
     """Read FCT file and return avg, p50, p99, stddev in microseconds, and timeout stats.
     Only includes expert flows (8KB flows), excludes background flows (8MB).
     """
@@ -113,8 +116,9 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
                     fct_values.append(fct_ns)
                     timeout_counts.append(0)
 
+    total_flows = len(fct_values)
     if not fct_values:
-        return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0
+        return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0, total_flows
 
     fct_values = np.array(fct_values)
     avg_us = np.mean(fct_values) / 1000  # Convert to microseconds
@@ -129,7 +133,7 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
     avg_timeout = np.mean(timeout_counts) if timeout_counts else 0.0
     max_timeout = max(timeout_counts) if timeout_counts else 0
 
-    return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout
+    return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout, total_flows
 
 
 def read_pfc_count(pfc_path: str) -> int:
@@ -218,7 +222,8 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
         # Read FCT data
         if fct_path.exists():
             (result.avg_fct, result.p50_fct, result.p99_fct, result.stddev_fct,
-             result.total_timeout, result.avg_timeout, result.max_timeout) = read_fct_results(str(fct_path))
+             result.total_timeout, result.avg_timeout, result.max_timeout,
+             result.total_flows) = read_fct_results(str(fct_path))
         else:
             print(f"Warning: FCT file not found for {dir_id}")
 
@@ -282,11 +287,11 @@ def print_fct_table(results: Dict[str, SimulationResult]):
     baseline_p50 = baseline.p50_fct if baseline else 0
     baseline_p99 = baseline.p99_fct if baseline else 0
 
-    print("\n" + "="*120)
+    print("\n" + "="*135)
     print("FCT 性能对比 (Flow Completion Time)")
-    print("="*120)
-    print(f"{'模式':<12} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(万)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
-    print("-"*120)
+    print("="*135)
+    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(万)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*135)
 
     for key in sorted_keys:
         r = results[key]
@@ -305,9 +310,9 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         avg_to_str = f"{r.avg_timeout:.2f}"
         max_to_str = f"{r.max_timeout}"
 
-        print(f"{key:<12} {avg_str:>14} {p50_str:>12} {p99_str:>12} {pfc_str:>10} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
+        print(f"{key:<12} {r.total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {pfc_str:>10} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
 
-    print("="*120)
+    print("="*135)
 
 
 def print_qlen_table(results: Dict[str, SimulationResult]):

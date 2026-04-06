@@ -103,6 +103,7 @@ class SwitchNode : public Node {
     // Inflex call counter (for debugging)
     static uint32_t m_inflexCallCount;
     static uint32_t m_inflexEcmpFallbackCount;
+    std::map<uint32_t, uint32_t> m_inflexBestPortMap;  // <dip, previousBestPort> for Inflex
 
     // Probe statistics
     static uint64_t m_pfcTriggeredProbeCount;   // Probes triggered by PFC change

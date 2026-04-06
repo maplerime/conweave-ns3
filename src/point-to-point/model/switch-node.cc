@@ -804,8 +804,50 @@ static void GetRemoteInfo(uint64_t currentTime, uint32_t port,
     }
 }
 
-// Unified Inflex path selection: find port with minimum path cost
+// Helper function to calculate path cost for a single port
 // pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1)
+static uint64_t CalculatePortCost(SwitchNode* node, int port,
+                                   const std::map<uint32_t, uint64_t>* uplinkProbeTimestamp,
+                                   std::map<uint32_t, uint32_t>* uplinkRxQueueLen,
+                                   const std::map<uint32_t, uint32_t>* uplinkPfcPortCount,
+                                   const std::map<uint32_t, uint64_t>* downlinkProbeTimestamp,
+                                   std::map<uint32_t, uint32_t>* downlinkRxQueueLen,
+                                   const std::map<uint32_t, uint32_t>* downlinkPfcPortCount,
+                                   bool useUplinkInfo, bool useDownlinkInfo, int splitPort,
+                                   uint64_t currentTime) {
+    const uint64_t PROBE_MAX_AGE = 10000;  // 10us
+
+    // Get local tx queue length
+    Ptr<NetDevice> dev = node->GetDevice(port);
+    uint32_t localTxQueue = GetLocalQueueBytes(dev);
+
+    // Get remote queue length and PFC count
+    uint32_t remoteRxQueueLen = 0;
+    uint32_t remotePfcCount = 0;
+
+    bool checkUplink = useUplinkInfo;
+    bool checkDownlink = useDownlinkInfo;
+
+    // For Agg: determine direction by port number
+    if (useUplinkInfo && useDownlinkInfo && splitPort >= 0) {
+        checkUplink = (static_cast<uint32_t>(port) > static_cast<uint32_t>(splitPort));
+        checkDownlink = !checkUplink;
+    }
+
+    if (checkUplink && uplinkProbeTimestamp) {
+        GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *uplinkProbeTimestamp, *uplinkRxQueueLen,
+                     *uplinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
+    } else if (checkDownlink && downlinkProbeTimestamp) {
+        GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *downlinkProbeTimestamp, *downlinkRxQueueLen,
+                     *downlinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
+    }
+
+    // Calculate path cost: local + remote weighted by PFC
+    return localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
+}
+
+// Unified Inflex path selection: find port with minimum path cost
+// Borrow DRILL's strategy: cached best port + 2 random sampled ports
 static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
                             const std::vector<int> &nexthops,
                             const std::map<uint32_t, uint64_t>* uplinkProbeTimestamp,
@@ -817,46 +859,48 @@ static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
                             bool useUplinkInfo, bool useDownlinkInfo, int splitPort) {
     node->m_inflexCallCount++;
 
-    const uint64_t PROBE_MAX_AGE = 10000;  // 10us
     uint64_t currentTime = Simulator::Now().GetNanoSeconds();
 
+    // Step 1: Check cached best port for this destination (like DRILL)
     int bestPort = nexthops[0];
     uint64_t minCost = std::numeric_limits<uint64_t>::max();
 
-    for (int port : nexthops) {
-        // Get local tx queue length
-        Ptr<NetDevice> dev = node->GetDevice(port);
-        uint32_t localTxQueue = GetLocalQueueBytes(dev);
-
-        // Get remote queue length and PFC count
-        uint32_t remoteRxQueueLen = 0;
-        uint32_t remotePfcCount = 0;
-
-        bool checkUplink = useUplinkInfo;
-        bool checkDownlink = useDownlinkInfo;
-
-        // For Agg: determine direction by port number
-        if (useUplinkInfo && useDownlinkInfo && splitPort >= 0) {
-            checkUplink = (static_cast<uint32_t>(port) > static_cast<uint32_t>(splitPort));
-            checkDownlink = !checkUplink;
+    auto itr = node->m_inflexBestPortMap.find(ch.dip);
+    if (itr != node->m_inflexBestPortMap.end()) {
+        int cachedPort = itr->second;
+        // Verify cached port is still valid (in nexthops)
+        if (std::find(nexthops.begin(), nexthops.end(), cachedPort) != nexthops.end()) {
+            uint64_t cachedCost = CalculatePortCost(node, cachedPort, uplinkProbeTimestamp, uplinkRxQueueLen,
+                                                     uplinkPfcPortCount, downlinkProbeTimestamp, downlinkRxQueueLen,
+                                                     downlinkPfcPortCount, useUplinkInfo, useDownlinkInfo,
+                                                     splitPort, currentTime);
+            minCost = cachedCost;
+            bestPort = cachedPort;
         }
+    }
 
-        if (checkUplink && uplinkProbeTimestamp) {
-            GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *uplinkProbeTimestamp, *uplinkRxQueueLen,
-                         *uplinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
-        } else if (checkDownlink && downlinkProbeTimestamp) {
-            GetRemoteInfo(currentTime, static_cast<uint32_t>(port), *downlinkProbeTimestamp, *downlinkRxQueueLen,
-                         *downlinkPfcPortCount, remoteRxQueueLen, remotePfcCount, PROBE_MAX_AGE);
-        }
+    // Step 2: Sample 2 random ports (like DRILL)
+    auto rand_nexthops = nexthops;
+    std::random_shuffle(rand_nexthops.begin(), rand_nexthops.end());
 
-        // Calculate path cost: local + remote weighted by PFC
-        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
+    const uint32_t INFLEX_SAMPLE_NUM = 2;  // Sample 2 ports
+    uint32_t sampleNum = std::min(INFLEX_SAMPLE_NUM, static_cast<uint32_t>(rand_nexthops.size()));
 
-        if (pathCost < minCost) {
-            minCost = pathCost;
+    for (uint32_t i = 0; i < sampleNum; i++) {
+        int port = rand_nexthops[i];
+        uint64_t portCost = CalculatePortCost(node, port, uplinkProbeTimestamp, uplinkRxQueueLen,
+                                               uplinkPfcPortCount, downlinkProbeTimestamp, downlinkRxQueueLen,
+                                               downlinkPfcPortCount, useUplinkInfo, useDownlinkInfo,
+                                               splitPort, currentTime);
+
+        if (portCost < minCost) {
+            minCost = portCost;
             bestPort = port;
         }
     }
+
+    // Step 3: Update cache (like DRILL)
+    node->m_inflexBestPortMap[ch.dip] = bestPort;
 
     return bestPort;
 }

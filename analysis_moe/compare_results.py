@@ -19,7 +19,7 @@ class SimulationResult:
     """Store simulation results for a single configuration."""
 
     def __init__(self, lb_mode: int, fecmp_bg: int, path: str):
-        self.lb_mode = lb_mode  # 0 = ECMP, 9 = Conweave, 10 = Hybrid, 12 = Inflex
+        self.lb_mode = lb_mode  # 0 = ECMP, 9 = Conweave, 10 = Hybrid, 11 = ECMP-Conweave, 12 = Inflex, 13 = Hybrid-AS, 14 = Hybrid-SS
         self.fecmp_bg = fecmp_bg
         self.path = path
         if lb_mode == 0:
@@ -30,8 +30,14 @@ class SimulationResult:
             self.mode_name = f"Hybrid({fecmp_bg})" if fecmp_bg > 0 else "Hybrid(0)"
         elif lb_mode == 11:
             self.mode_name = f"ECMP-Conweave({fecmp_bg})" if fecmp_bg > 0 else "ECMP-Conweave(0)"
-        else:  # lb_mode == 12
+        elif lb_mode == 12:
             self.mode_name = f"Inflex({fecmp_bg})" if fecmp_bg > 0 else "Inflex(0)"
+        elif lb_mode == 13:
+            self.mode_name = f"Hybrid-AS({fecmp_bg})" if fecmp_bg > 0 else "Hybrid-AS(0)"
+        elif lb_mode == 14:
+            self.mode_name = f"Hybrid-SS({fecmp_bg})" if fecmp_bg > 0 else "Hybrid-SS(0)"
+        else:
+            self.mode_name = f"Mode{lb_mode}({fecmp_bg})"
 
         # FCT metrics (in microseconds)
         self.avg_fct = 0.0
@@ -261,23 +267,29 @@ def format_delta(delta_percent: float, show_sign: bool = True) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult]):
     """Print FCT performance comparison table."""
-    # Sort order: Hybrid first, then Inflex, then others (ECMP, Conweave, ECMP-Conweave)
+    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave, ECMP-Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (0, bg)
-        elif mode == 'Inflex':
+        elif mode == 'Hybrid-AS':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (1, bg)
+        elif mode == 'Hybrid-SS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (2, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (3, bg)
         elif mode == 'ECMP':
-            return (2, 0)
+            return (4, 0)
         elif mode == 'Conweave':
-            return (3, 0)  # No fecmp_bg for Conweave
+            return (5, 0)  # No fecmp_bg for Conweave
         elif mode == 'ECMP-Conweave':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (4, bg)
-        return (5, 0)
+            return (6, bg)
+        return (7, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -317,23 +329,29 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
     """Print queue length comparison table."""
-    # Sort order: Hybrid first, then Inflex, then others (ECMP, Conweave, ECMP-Conweave)
+    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave, ECMP-Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (0, bg)
-        elif mode == 'Inflex':
+        elif mode == 'Hybrid-AS':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (1, bg)
+        elif mode == 'Hybrid-SS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (2, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (3, bg)
         elif mode == 'ECMP':
-            return (2, 0)
+            return (4, 0)
         elif mode == 'Conweave':
-            return (3, 0)  # No fecmp_bg for Conweave
+            return (5, 0)  # No fecmp_bg for Conweave
         elif mode == 'ECMP-Conweave':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (4, bg)
-        return (5, 0)
+            return (6, bg)
+        return (7, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -419,15 +437,17 @@ def print_summary(results: Dict[str, SimulationResult]):
 
     # Timeout statistics by mode
     print("\n--- 超时重传统计 ---")
-    modes_to_compare = [("Hybrid", "Hybrid"), ("Conweave", "Conweave"), ("Inflex", "Inflex"),
-                        ("ECMP-Conweave", "ECMP-Conweave")]
+    modes_to_compare = [("Hybrid", "Hybrid"), ("Hybrid-AS", "Hybrid-AS"), ("Hybrid-SS", "Hybrid-SS"),
+                        ("Conweave", "Conweave"), ("Inflex", "Inflex"), ("ECMP-Conweave", "ECMP-Conweave")]
     for mode_key, mode_name in modes_to_compare:
         total_to = sum(r.total_timeout for k, r in results.items() if mode_key in k)
         if total_to > 0:
             print(f"• {mode_name} 总超时: {total_to:,}")
 
     # Compare timeout ratios
-    total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k)
+    total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_as_to = sum(r.total_timeout for k, r in results.items() if "Hybrid-AS" in k)
+    total_hybrid_ss_to = sum(r.total_timeout for k, r in results.items() if "Hybrid-SS" in k)
     total_conweave_to = sum(r.total_timeout for k, r in results.items() if "Conweave" in k)
     total_inflex_to = sum(r.total_timeout for k, r in results.items() if "Inflex" in k)
 
@@ -437,6 +457,12 @@ def print_summary(results: Dict[str, SimulationResult]):
     if total_hybrid_to > 0 and total_inflex_to > 0:
         to_ratio = total_inflex_to / total_hybrid_to
         print(f"• Inflex vs Hybrid 超时比例: {to_ratio:.2f}x")
+    if total_hybrid_to > 0 and total_hybrid_as_to > 0:
+        to_ratio = total_hybrid_as_to / total_hybrid_to
+        print(f"• Hybrid-AS vs Hybrid 超时比例: {to_ratio:.2f}x")
+    if total_hybrid_to > 0 and total_hybrid_ss_to > 0:
+        to_ratio = total_hybrid_ss_to / total_hybrid_to
+        print(f"• Hybrid-SS vs Hybrid 超时比例: {to_ratio:.2f}x")
     if total_conweave_to > 0 and total_inflex_to > 0:
         to_ratio = total_inflex_to / total_conweave_to
         print(f"• Inflex vs Conweave 超时比例: {to_ratio:.2f}x")
@@ -448,7 +474,9 @@ def print_summary(results: Dict[str, SimulationResult]):
         if total_pfc > 0:
             print(f"• {mode_name} 总PFC: {total_pfc:,}")
 
-    total_hybrid_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid" in k)
+    total_hybrid_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_as_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid-AS" in k)
+    total_hybrid_ss_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid-SS" in k)
     total_conweave_pfc = sum(r.pfc_count for k, r in results.items() if "Conweave" in k)
     total_inflex_pfc = sum(r.pfc_count for k, r in results.items() if "Inflex" in k)
 
@@ -458,6 +486,12 @@ def print_summary(results: Dict[str, SimulationResult]):
     if total_hybrid_pfc > 0 and total_inflex_pfc > 0:
         pfc_ratio = total_inflex_pfc / total_hybrid_pfc
         print(f"• Inflex vs Hybrid PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc > 0 and total_hybrid_as_pfc > 0:
+        pfc_ratio = total_hybrid_as_pfc / total_hybrid_pfc
+        print(f"• Hybrid-AS vs Hybrid PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc > 0 and total_hybrid_ss_pfc > 0:
+        pfc_ratio = total_hybrid_ss_pfc / total_hybrid_pfc
+        print(f"• Hybrid-SS vs Hybrid PFC比例: {pfc_ratio:.2f}x")
 
     print("="*100)
     print("="*70)

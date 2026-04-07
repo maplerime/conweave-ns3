@@ -121,7 +121,9 @@ class Settings {
     static const uint32_t CONWEAVE_CTRL_DUMMY_INDEV = 88888888;  // just arbitrary
 
     /* load balancer */
-    // 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid (use pg field to select per-flow LB)
+    // 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid, 12: Inflex
+    // 13: Hybrid-AS (Adaptive Spray for tag=2, ECMP for tag=1)
+    // 14: Hybrid-SS (Random Spray for tag=2, ECMP for tag=1)
     static uint32_t lb_mode;
 
     // for common setting
@@ -141,10 +143,12 @@ class Settings {
     static uint32_t dropped_pkt_sw_ingress;
     static uint32_t dropped_pkt_sw_egress;
 
-    /* Tag routing statistics - for Hybrid/Inflex mode verification */
-    static uint64_t tag1_ecmp_count;    // tag=1 flows using ECMP
-    static uint64_t tag2_inflex_count;  // tag=2 flows using Inflex
-    static uint64_t tag2_drill_count;   // tag=2 flows using DRILL
+    /* Tag routing statistics - for Hybrid/Inflex/Spray mode verification */
+    static uint64_t tag1_ecmp_count;          // tag=1 flows using ECMP
+    static uint64_t tag2_inflex_count;        // tag=2 flows using Inflex
+    static uint64_t tag2_drill_count;         // tag=2 flows using DRILL
+    static uint64_t tag2_adaptive_spray_count; // tag=2 flows using Adaptive Spray
+    static uint64_t tag2_random_spray_count;   // tag=2 flows using Random Spray
 };
 
 }  // namespace ns3

@@ -111,6 +111,8 @@ lb_modes = {
     "hybrid": 10,  # Hybrid mode: use pg field to select per-flow LB (pg=2->drill, otherwise->fecmp)
     "ecmp-conweave": 11,  # ECMP-Conweave mode: use pg field (pg=2->conweave, otherwise->fecmp)
     "inflex": 12,  # Inflex mode: explicit path selection with queue monitoring
+    "hybrid-as": 13,  # Hybrid-AS mode: Adaptive Spray for tag=2, ECMP for tag=1
+    "hybrid-ss": 14,  # Hybrid-SS mode: Random Spray for tag=2, ECMP for tag=1
 }
 
 topo2bdp = {

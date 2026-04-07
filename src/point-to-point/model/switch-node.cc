@@ -162,6 +162,115 @@ uint32_t SwitchNode::DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
                                   const std::vector<int> &nexthops) {
     return DoLbFlowECMP(p, ch, nexthops);  // flow ECMP (dummy)
 }
+
+/*------------------Adaptive Spraying (hybrid-as, lb_mode=13) ----------------*/
+uint32_t SwitchNode::DoLbAdaptiveSpray(Ptr<const Packet> p, const CustomHeader &ch,
+                                       const std::vector<int> &nexthops) {
+    // Step 1: Calculate pathCost for all ports
+    std::vector<uint64_t> pathCosts;
+    uint64_t currentTime = Simulator::Now().GetNanoSeconds();
+    const uint64_t PROBE_MAX_AGE = 10000;  // 10us
+
+    for (int port : nexthops) {
+        // Get local tx queue length
+        Ptr<NetDevice> dev = GetDevice(port);
+        uint32_t localTxQueue = 0;
+        Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
+        if (qbb) {
+            localTxQueue = qbb->GetQueue()->GetNBytesTotal();
+        }
+
+        // Get remote queue length and PFC count
+        uint32_t remoteRxQueueLen = 0;
+        uint32_t remotePfcCount = 0;
+
+        // For simplicity, use remote info based on switch type
+        if (m_switchType == SWITCH_TYPE_TOR || m_switchType == SWITCH_TYPE_CORE) {
+            auto itTimestamp = m_remoteProbeTimestamp.find(port);
+            if (itTimestamp != m_remoteProbeTimestamp.end()) {
+                if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                    m_remoteRxQueueLen[port] = 0;
+                }
+            }
+            auto it = m_remoteRxQueueLen.find(port);
+            if (it != m_remoteRxQueueLen.end()) {
+                remoteRxQueueLen = it->second;
+            }
+            auto itPfc = m_remotePfcPortCount.find(port);
+            if (itPfc != m_remotePfcPortCount.end()) {
+                remotePfcCount = itPfc->second;
+            }
+        } else if (m_switchType == SWITCH_TYPE_AGGREGATION) {
+            uint32_t midPort = GetNDevices() / 2;
+            bool isUplink = (static_cast<uint32_t>(port) > midPort);
+            if (isUplink) {
+                auto itTimestamp = m_uplinkProbeTimestamp.find(port);
+                if (itTimestamp != m_uplinkProbeTimestamp.end()) {
+                    if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                        m_uplinkRxQueueLen[port] = 0;
+                    }
+                }
+                auto it = m_uplinkRxQueueLen.find(port);
+                if (it != m_uplinkRxQueueLen.end()) {
+                    remoteRxQueueLen = it->second;
+                }
+                auto itPfc = m_uplinkPfcPortCount.find(port);
+                if (itPfc != m_uplinkPfcPortCount.end()) {
+                    remotePfcCount = itPfc->second;
+                }
+            } else {
+                auto itTimestamp = m_downlinkProbeTimestamp.find(port);
+                if (itTimestamp != m_downlinkProbeTimestamp.end()) {
+                    if ((currentTime - itTimestamp->second) > PROBE_MAX_AGE) {
+                        m_downlinkRxQueueLen[port] = 0;
+                    }
+                }
+                auto it = m_downlinkRxQueueLen.find(port);
+                if (it != m_downlinkRxQueueLen.end()) {
+                    remoteRxQueueLen = it->second;
+                }
+                auto itPfc = m_downlinkPfcPortCount.find(port);
+                if (itPfc != m_downlinkPfcPortCount.end()) {
+                    remotePfcCount = itPfc->second;
+                }
+            }
+        }
+
+        // Calculate path cost: local + remote weighted by PFC
+        uint64_t pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
+        pathCosts.push_back(pathCost);
+    }
+
+    // Step 2: Calculate inverse costs
+    std::vector<double> invCosts;
+    double totalInvCost = 0.0;
+    for (uint64_t cost : pathCosts) {
+        double invCost = 1.0 / static_cast<double>(cost + 1);
+        invCosts.push_back(invCost);
+        totalInvCost += invCost;
+    }
+
+    // Step 3: Roulette wheel selection
+    double randVal = static_cast<double>(std::rand()) / RAND_MAX;
+    double cumulative = 0.0;
+    for (size_t i = 0; i < nexthops.size(); i++) {
+        cumulative += invCosts[i] / totalInvCost;
+        if (randVal < cumulative) {
+            return nexthops[i];
+        }
+    }
+
+    // Fallback: return last port
+    return nexthops.back();
+}
+
+/*------------------Random Spraying (hybrid-ss, lb_mode=14) ----------------*/
+uint32_t SwitchNode::DoLbRandomSpray(Ptr<const Packet> p, const CustomHeader &ch,
+                                     const std::vector<int> &nexthops) {
+    // Uniform random selection
+    size_t idx = std::rand() % nexthops.size();
+    return nexthops[idx];
+}
 /*----------------------------------*/
 
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex) {
@@ -376,6 +485,46 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         return DoLbFlowECMP(p, ch, nexthops);
     }
 
+    // Hybrid-AS mode (lb_mode=13): Adaptive Spray for tag=2, ECMP for tag=1
+    if (Settings::lb_mode == 13) {
+        if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // tag == 0 (no tag) or tag == 2 -> Adaptive Spray, tag == 1 -> FlowECMP
+        if (ch.udp.tag == 0 || ch.udp.tag == 2) {
+            Settings::tag2_adaptive_spray_count++;
+#if (DEBUG_TAG_ROUTING == true)
+            std::cout << "[Hybrid-AS] tag=" << ch.udp.tag << " using Adaptive Spray (total=" << Settings::tag2_adaptive_spray_count << ")" << std::endl;
+#endif
+            return DoLbAdaptiveSpray(p, ch, nexthops);
+        }
+        Settings::tag1_ecmp_count++;
+#if (DEBUG_TAG_ROUTING == true)
+        std::cout << "[Hybrid-AS] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+#endif
+        return DoLbFlowECMP(p, ch, nexthops);
+    }
+
+    // Hybrid-SS mode (lb_mode=14): Random Spray for tag=2, ECMP for tag=1
+    if (Settings::lb_mode == 14) {
+        if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // tag == 0 (no tag) or tag == 2 -> Random Spray, tag == 1 -> FlowECMP
+        if (ch.udp.tag == 0 || ch.udp.tag == 2) {
+            Settings::tag2_random_spray_count++;
+#if (DEBUG_TAG_ROUTING == true)
+            std::cout << "[Hybrid-SS] tag=" << ch.udp.tag << " using Random Spray (total=" << Settings::tag2_random_spray_count << ")" << std::endl;
+#endif
+            return DoLbRandomSpray(p, ch, nexthops);
+        }
+        Settings::tag1_ecmp_count++;
+#if (DEBUG_TAG_ROUTING == true)
+        std::cout << "[Hybrid-SS] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+#endif
+        return DoLbFlowECMP(p, ch, nexthops);
+    }
+
     // Original modes
     if (Settings::lb_mode == 0 || control_pkt) {  // control packet (ACK, NACK, PFC, QCN)
         return DoLbFlowECMP(p, ch, nexthops);     // ECMP routing path decision (4-tuple)
@@ -425,8 +574,19 @@ void SwitchNode::DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, 
                 if (Settings::lb_mode == 12) {
                     uint32_t ingressBytes = m_mmu->GetIngressBufferBytes(inDev);
                     uint32_t maxBuffer = m_mmu->GetMaxBufferBytesPerPort();
+                    uint32_t pgBytes = m_mmu->GetIngressPGBytes(inDev, qIndex);
+                    const uint32_t PG_THRESHOLD = 15 * 1024;  // 15KB threshold for single PG
+
+                    bool triggerProbe = false;
                     if (maxBuffer > 0 && (ingressBytes * 100 / maxBuffer) > QUEUE_OCCUPANCY_THRESHOLD) {
                         // Queue occupancy > 60%, send probe to notify connected switch
+                        triggerProbe = true;
+                    } else if (pgBytes > PG_THRESHOLD) {
+                        // Single PG exceeds 15KB, also send probe
+                        triggerProbe = true;
+                    }
+
+                    if (triggerProbe) {
                         SendProbeToPort(inDev);  // Rate limiting handled inside
                     }
                 }
@@ -804,6 +964,30 @@ static void GetRemoteInfo(uint64_t currentTime, uint32_t port,
     }
 }
 
+// Helper function to extract FlowKey from CustomHeader
+static FlowKey ExtractFlowKey(const CustomHeader &ch) {
+    FlowKey key;
+    key.sip = ch.sip;
+    key.dip = ch.dip;
+    key.proto = ch.l3Prot;
+
+    // Extract source and destination ports based on protocol
+    if (ch.l3Prot == 0x6) {  // TCP
+        key.sport = ch.tcp.sport;
+        key.dport = ch.tcp.dport;
+    } else if (ch.l3Prot == 0x11) {  // UDP
+        key.sport = ch.udp.sport;
+        key.dport = ch.udp.dport;
+    } else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD) {  // ACK or NACK
+        key.sport = ch.ack.sport;
+        key.dport = ch.ack.dport;
+    } else {
+        key.sport = 0;
+        key.dport = 0;
+    }
+    return key;
+}
+
 // Helper function to calculate path cost for a single port
 // pathCost = localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1)
 static uint64_t CalculatePortCost(SwitchNode* node, int port,
@@ -843,11 +1027,12 @@ static uint64_t CalculatePortCost(SwitchNode* node, int port,
     }
 
     // Calculate path cost: local + remote weighted by PFC
-    return localTxQueue + (remoteRxQueueLen + 8192) * (remotePfcCount + 1);
+    // Formula: localTxQueue + remoteRxQueueLen * 1.2 + remotePFCCount * 1024
+    return localTxQueue + (remoteRxQueueLen * 6) / 5 + remotePfcCount * 1024;
 }
 
 // Unified Inflex path selection: find port with minimum path cost
-// Borrow DRILL's strategy: cached best port + 2 random sampled ports
+// Borrow DRILL's strategy: per-destination stickiness + 2 random sampled ports
 static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
                             const std::vector<int> &nexthops,
                             const std::map<uint32_t, uint64_t>* uplinkProbeTimestamp,
@@ -864,6 +1049,7 @@ static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
     // Step 1: Check cached best port for this destination (like DRILL)
     int bestPort = nexthops[0];
     uint64_t minCost = std::numeric_limits<uint64_t>::max();
+    bool hasCachedPort = false;
 
     auto itr = node->m_inflexBestPortMap.find(ch.dip);
     if (itr != node->m_inflexBestPortMap.end()) {
@@ -876,6 +1062,7 @@ static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
                                                      splitPort, currentTime);
             minCost = cachedCost;
             bestPort = cachedPort;
+            hasCachedPort = true;
         }
     }
 
@@ -888,6 +1075,11 @@ static int SelectInflexPath(SwitchNode* node, Ptr<Packet> p, CustomHeader &ch,
 
     for (uint32_t i = 0; i < sampleNum; i++) {
         int port = rand_nexthops[i];
+        // Skip the cached port if it's in the sampled list
+        if (hasCachedPort && port == bestPort) {
+            continue;
+        }
+
         uint64_t portCost = CalculatePortCost(node, port, uplinkProbeTimestamp, uplinkRxQueueLen,
                                                uplinkPfcPortCount, downlinkProbeTimestamp, downlinkRxQueueLen,
                                                downlinkPfcPortCount, useUplinkInfo, useDownlinkInfo,

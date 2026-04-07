@@ -15,6 +15,29 @@ namespace ns3 {
 
 class Packet;
 
+// Flow key for 5-tuple identification
+struct FlowKey {
+    uint32_t sip;
+    uint32_t dip;
+    uint16_t sport;
+    uint16_t dport;
+    uint8_t proto;
+
+    bool operator<(const FlowKey& other) const {
+        if (sip != other.sip) return sip < other.sip;
+        if (dip != other.dip) return dip < other.dip;
+        if (sport != other.sport) return sport < other.sport;
+        if (dport != other.dport) return dport < other.dport;
+        return proto < other.proto;
+    }
+};
+
+// Flow entry with sticky weight
+struct FlowEntry {
+    int port;           // Cached path
+    uint8_t weight;     // Remaining sticky weight (default 4)
+};
+
 // Switch type enumeration
 enum SwitchType {
     SWITCH_TYPE_UNKNOWN = 0,
@@ -66,6 +89,12 @@ class SwitchNode : public Node {
     // ConWeave (lb_mode = 9)
     uint32_t DoLbConWeave(Ptr<const Packet> p, const CustomHeader &ch,
                            const std::vector<int> &nexthops);  // dummy
+    // Adaptive Spraying (lb_mode = 13, hybrid-as)
+    uint32_t DoLbAdaptiveSpray(Ptr<const Packet> p, const CustomHeader &ch,
+                                const std::vector<int> &nexthops);
+    // Random Spraying (lb_mode = 14, hybrid-ss)
+    uint32_t DoLbRandomSpray(Ptr<const Packet> p, const CustomHeader &ch,
+                              const std::vector<int> &nexthops);
 
    public:
     // Ptr<BroadcomNode> m_broadcom;
@@ -104,6 +133,10 @@ class SwitchNode : public Node {
     static uint32_t m_inflexCallCount;
     static uint32_t m_inflexEcmpFallbackCount;
     std::map<uint32_t, uint32_t> m_inflexBestPortMap;  // <dip, previousBestPort> for Inflex
+
+    // Flow stickiness with weight (Inflex)
+    std::map<FlowKey, FlowEntry> m_flowStickyMap;  // <flowKey, port + weight>
+    static const uint8_t STICKY_WEIGHT_DEFAULT = 4;  // Default sticky weight
 
     // Probe statistics
     static uint64_t m_pfcTriggeredProbeCount;   // Probes triggered by PFC change

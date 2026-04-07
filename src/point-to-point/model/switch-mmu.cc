@@ -425,6 +425,14 @@ uint32_t SwitchMmu::GetIngressBufferBytes(uint32_t port) {
     return totalBytes;
 }
 
+uint32_t SwitchMmu::GetIngressPGBytes(uint32_t port, uint32_t qIndex) {
+    if (port >= pCnt || qIndex >= qCnt) {
+        return 0;
+    }
+    // Return ingress buffer usage for a specific priority group
+    return m_usedIngressPGBytes[port][qIndex];
+}
+
 bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {
     if (qIndex == 0)  // qidx=0 as highest priority
         return false;

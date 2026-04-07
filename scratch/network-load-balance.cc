@@ -1967,22 +1967,36 @@ int main(int argc, char *argv[]) {
         std::cout << "========================" << std::endl;
     }
 
-    // Output tag-based routing statistics for Hybrid and Inflex modes
-    if (Settings::lb_mode == 10 || Settings::lb_mode == 12) {
+    // Output tag-based routing statistics for Hybrid, Inflex, and Spray modes
+    if (Settings::lb_mode == 10 || Settings::lb_mode == 12 || Settings::lb_mode == 13 || Settings::lb_mode == 14) {
         std::cout << "\n=== TAG ROUTING STATISTICS ===" << std::endl;
-        std::cout << "Mode: " << (Settings::lb_mode == 10 ? "Hybrid (lb_mode=10)" : "Inflex (lb_mode=12)") << std::endl;
+        const char* mode_name = nullptr;
+        uint64_t tag2_count = 0;
+        if (Settings::lb_mode == 10) {
+            mode_name = "Hybrid (lb_mode=10)";
+            tag2_count = Settings::tag2_drill_count;
+        } else if (Settings::lb_mode == 12) {
+            mode_name = "Inflex (lb_mode=12)";
+            tag2_count = Settings::tag2_inflex_count;
+        } else if (Settings::lb_mode == 13) {
+            mode_name = "Hybrid-AS (lb_mode=13)";
+            tag2_count = Settings::tag2_adaptive_spray_count;
+        } else if (Settings::lb_mode == 14) {
+            mode_name = "Hybrid-SS (lb_mode=14)";
+            tag2_count = Settings::tag2_random_spray_count;
+        }
+        std::cout << "Mode: " << mode_name << std::endl;
         std::cout << "--- Flow Creation ---" << std::endl;
         std::cout << "tag=1 flows created: " << tag1_flow_count << std::endl;
         std::cout << "tag=2 flows created: " << tag2_flow_count << std::endl;
         std::cout << "--- Packet Routing ---" << std::endl;
         std::cout << "tag=1 flows (ECMP): " << Settings::tag1_ecmp_count << " packets" << std::endl;
-        if (Settings::lb_mode == 10) {
-            std::cout << "tag=2 flows (DRILL): " << Settings::tag2_drill_count << " packets" << std::endl;
-        } else {
-            std::cout << "tag=2 flows (Inflex): " << Settings::tag2_inflex_count << " packets" << std::endl;
-        }
-        uint64_t total_tag_routed = Settings::tag1_ecmp_count +
-                                     (Settings::lb_mode == 10 ? Settings::tag2_drill_count : Settings::tag2_inflex_count);
+        std::cout << "tag=2 flows (" << (Settings::lb_mode == 10 ? "DRILL" :
+                                        Settings::lb_mode == 12 ? "Inflex" :
+                                        Settings::lb_mode == 13 ? "AdaptiveSpray" :
+                                        Settings::lb_mode == 14 ? "RandomSpray" : "Unknown") << "): "
+                  << tag2_count << " packets" << std::endl;
+        uint64_t total_tag_routed = Settings::tag1_ecmp_count + tag2_count;
         std::cout << "Total tag-routed packets: " << total_tag_routed << std::endl;
         std::cout << "=============================\n" << std::endl;
     }

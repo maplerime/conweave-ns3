@@ -100,10 +100,11 @@ print(f"Receiver nodes: {len(receiver_group_ids) * GROUP_SIZE} (8 groups x 4)")
 print(f"Background-only nodes: {len(bg_nodes)} ({len(remaining_for_bg)} groups x 4)")
 print()
 
-# Generate MoE flows: 8 rounds, each round experts send to ONE receiver group
+# Generate MoE flows: 8 rounds, each round experts send to ALL receiver groups
 # Use one-to-one mapping: expert_group[i][j] -> receiver_group[k][j]
+# ALL flows start at the same time (simultaneous transmission)
 moe_lines = []
-moe_start_time = BG_START_TIME + 0.001  # Start 1ms after background
+moe_start_time = BG_START_TIME  # All flows start at the same time as background
 
 for round_id in range(ROUNDS):
     # Each round, each expert group sends to ALL receiver groups
@@ -131,34 +132,52 @@ moe_traffic = total_moe_flows * MOE_FLOW_SIZE
 print(f"MoE flows per round: {total_moe_flows // ROUNDS}")
 print(f"Total MoE flows: {total_moe_flows} ({moe_traffic / 1024:.1f} KB)")
 print(f"Pattern: Each expert group -> all {RECEIVER_GROUPS} receiver groups, 1 flow per pair, {GROUP_SIZE} nodes rotate across rounds")
+print(f"ALL flows start simultaneously at {moe_start_time}s")
 print()
 
 # Generate background flow pool
-# Source and destination are selected from remaining nodes (not expert or receiver groups)
-# Only requirement: src != dst
+# Source and destination groups are from remaining groups (not expert or receiver)
+# Use one-to-one mapping: src_group[i] -> dst_group[i] by index
 MAX_BG_FLOWS = 192
 bg_flow_pool = []
 
-# Generate all possible (src, dst) pairs from bg_nodes where src != dst
-# Then randomly select from them
-all_node_pairs = []
-for src in bg_nodes:
-    for dst in bg_nodes:
-        if src != dst:
-            all_node_pairs.append((src, dst))
+# Get background groups as node lists
+bg_groups_nodes = []
+for g in remaining_for_bg:
+    bg_groups_nodes.append(get_group_nodes(g))
 
-# Randomly select 192 pairs
-selected_pairs = random.sample(all_node_pairs, MAX_BG_FLOWS)
+print(f"Background groups: {len(bg_groups_nodes)} groups")
 
-for src, dst in selected_pairs:
-    pg = PG_VALUE
-    tag = TAG_BACKGROUND
-    bg_flow_pool.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {tag}\n")
+# Generate background flows using one-to-one node mapping (like expert flows)
+# Each src group connects to each dst group with one flow per node index
+# To get 192 flows, we need enough src-dst group pairs
+
+flow_count = 0
+for src_group in bg_groups_nodes:
+    for dst_group in bg_groups_nodes:
+        if flow_count >= MAX_BG_FLOWS:
+            break
+        for node_idx in range(GROUP_SIZE):  # 4 nodes per group
+            if flow_count >= MAX_BG_FLOWS:
+                break
+            src = src_group[node_idx]
+            dst = dst_group[node_idx]
+
+            # Skip if src == dst
+            if src == dst:
+                continue
+
+            pg = PG_VALUE
+            tag = TAG_BACKGROUND
+            bg_flow_pool.append(f"{src} {dst} {pg} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {tag}\n")
+            flow_count += 1
+    if flow_count >= MAX_BG_FLOWS:
+        break
 
 print(f"Background flow pool generated: {len(bg_flow_pool)} flows")
-print(f"  - Source and destination selected from remaining {len(bg_nodes)} nodes")
-print(f"  - (excluding {len(expert_group_ids) * GROUP_SIZE} expert nodes and {len(receiver_group_ids) * GROUP_SIZE} receiver nodes)")
-print(f"  - Only requirement: src != dst")
+print(f"  - Source and destination selected from {len(bg_groups_nodes)} background groups")
+print(f"  - (excluding {len(expert_group_ids)} expert groups and {len(receiver_group_ids)} receiver groups)")
+print(f"  - One-to-one node mapping: src_group[i] -> dst_group[i]")
 print(f"  - First 64 flows will be used for fecmp=64")
 print(f"  - First 128 flows will be used for fecmp=128")
 print(f"  - All 192 flows will be used for fecmp=192")

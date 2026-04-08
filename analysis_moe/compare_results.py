@@ -19,7 +19,7 @@ class SimulationResult:
     """Store simulation results for a single configuration."""
 
     def __init__(self, lb_mode: int, fecmp_bg: int, path: str):
-        self.lb_mode = lb_mode  # 0 = ECMP, 9 = Conweave, 10 = Hybrid, 11 = ECMP-Conweave, 12 = Inflex, 13 = Hybrid-AS, 14 = Hybrid-SS
+        self.lb_mode = lb_mode  # 0 = ECMP, 9 = Conweave, 10 = Hybrid, 12 = Inflex, 13 = Hybrid-AS, 14 = Hybrid-SS
         self.fecmp_bg = fecmp_bg
         self.path = path
         if lb_mode == 0:
@@ -28,8 +28,6 @@ class SimulationResult:
             self.mode_name = "Conweave"  # No fecmp_bg suffix
         elif lb_mode == 10:
             self.mode_name = f"Hybrid({fecmp_bg})" if fecmp_bg > 0 else "Hybrid(0)"
-        elif lb_mode == 11:
-            self.mode_name = f"ECMP-Conweave({fecmp_bg})" if fecmp_bg > 0 else "ECMP-Conweave(0)"
         elif lb_mode == 12:
             self.mode_name = f"Inflex({fecmp_bg})" if fecmp_bg > 0 else "Inflex(0)"
         elif lb_mode == 13:
@@ -267,7 +265,7 @@ def format_delta(delta_percent: float, show_sign: bool = True) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult]):
     """Print FCT performance comparison table."""
-    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave, ECMP-Conweave)
+    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
@@ -286,10 +284,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
             return (4, 0)
         elif mode == 'Conweave':
             return (5, 0)  # No fecmp_bg for Conweave
-        elif mode == 'ECMP-Conweave':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (6, bg)
-        return (7, 0)
+        return (6, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -329,7 +324,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
     """Print queue length comparison table."""
-    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave, ECMP-Conweave)
+    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
@@ -348,10 +343,7 @@ def print_qlen_table(results: Dict[str, SimulationResult]):
             return (4, 0)
         elif mode == 'Conweave':
             return (5, 0)  # No fecmp_bg for Conweave
-        elif mode == 'ECMP-Conweave':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (6, bg)
-        return (7, 0)
+        return (6, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -438,7 +430,7 @@ def print_summary(results: Dict[str, SimulationResult]):
     # Timeout statistics by mode
     print("\n--- 超时重传统计 ---")
     modes_to_compare = [("Hybrid", "Hybrid"), ("Hybrid-AS", "Hybrid-AS"), ("Hybrid-SS", "Hybrid-SS"),
-                        ("Conweave", "Conweave"), ("Inflex", "Inflex"), ("ECMP-Conweave", "ECMP-Conweave")]
+                        ("Conweave", "Conweave"), ("Inflex", "Inflex")]
     for mode_key, mode_name in modes_to_compare:
         total_to = sum(r.total_timeout for k, r in results.items() if mode_key in k)
         if total_to > 0:

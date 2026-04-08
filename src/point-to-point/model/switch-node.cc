@@ -353,14 +353,15 @@ void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     // ECMP-Conweave hybrid (lb_mode=11): tag==2 uses ConWeave, others use ECMP
-    if (Settings::lb_mode == 11) {
-        bool control_pkt = (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
-        if (!control_pkt && ch.udp.tag == 2) {
-            m_mmu->m_conweaveRouting.RouteInput(p, ch);
-            return;
-        }
-        // tag!=2 or control_pkt: fall through to SendToDevContinue -> GetOutDev -> ECMP
-    }
+    // DISABLED
+    // if (Settings::lb_mode == 11) {
+    //     bool control_pkt = (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC);
+    //     if (!control_pkt && ch.udp.tag == 2) {
+    //         m_mmu->m_conweaveRouting.RouteInput(p, ch);
+    //         return;
+    //     }
+    //     // tag!=2 or control_pkt: fall through to SendToDevContinue -> GetOutDev -> ECMP
+    // }
 
     // Others
     SendToDevContinue(p, ch);
@@ -452,10 +453,10 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing
-    // Simplified: all use ECMP directly
-    if (Settings::lb_mode == 11) {
-        return DoLbFlowECMP(p, ch, nexthops);
-    }
+    // DISABLED - Mode removed
+    // if (Settings::lb_mode == 11) {
+    //     return DoLbFlowECMP(p, ch, nexthops);
+    // }
 
     // Inflex mode (lb_mode=12): explicit path selection based on queue monitoring
     if (Settings::lb_mode == 12) {

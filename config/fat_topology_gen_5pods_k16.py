@@ -12,9 +12,10 @@ pods_used = 5  # Use only 5 out of 16 pods
 hosts_per_pod = 256
 tors_per_pod = 8  # ToR switches per pod (k/2)
 hosts_per_tor = 32  # hosts per ToR (256 / 8)
-host_link_rate = 100  # Gbps
+host_link_rate = 400  # Gbps
 switch_link_rate = 400  # Gbps
-link_latency = 1000  # ns
+host_switch_latency = 10  # ns (host-to-Tor and Tor-to-Agg)
+agg_core_latency = 300  # ns (Agg-to-Core)
 
 assert(k_fat % 2 == 0)
 print("Fat K : {}".format(k_fat))
@@ -44,7 +45,7 @@ i_agg = n_server_total + n_tor_total
 i_core = n_server_total + n_tor_total + n_agg_total
 
 # Generate topology filename
-filename = "fat_k16_5pods_256perPod_100G_400G_OS1.txt"
+filename = "fat_k16_5pods_256perPod_400G_400G_OS1.txt"
 
 num_link = 0
 with open(filename, "w") as f:
@@ -58,7 +59,7 @@ with open(filename, "w") as f:
                 # Round-robin: host h connects to tor (h % 8)
                 target_tor_global_id = i_tor + pod_id * n_tor_per_pod + (h % n_tor_per_pod)
                 f.write("{} {} {}Gbps {}ns 0.000000\n".format(
-                    server_global_id, target_tor_global_id, host_link_rate, link_latency))
+                    server_global_id, target_tor_global_id, host_link_rate, host_switch_latency))
                 num_link += 1
 
     # ToR to Aggregator links (switch-to-switch)
@@ -68,7 +69,7 @@ with open(filename, "w") as f:
             for agg_id in range(n_agg_per_pod):
                 agg_global_id = i_agg + pod_id * n_agg_per_pod + agg_id
                 f.write("{} {} {}Gbps {}ns 0.000000\n".format(
-                    tor_global_id, agg_global_id, switch_link_rate, link_latency))
+                    tor_global_id, agg_global_id, switch_link_rate, host_switch_latency))
                 num_link += 1
 
     # Aggregator to Core links (switch-to-switch)
@@ -82,7 +83,7 @@ with open(filename, "w") as f:
             for c in range(n_agg_per_pod):
                 core_global_id = i_core + agg_id * n_agg_per_pod + c
                 f.write("{} {} {}Gbps {}ns 0.000000\n".format(
-                    agg_global_id, core_global_id, switch_link_rate, link_latency))
+                    agg_global_id, core_global_id, switch_link_rate, agg_core_latency))
                 num_link += 1
 
 def line_prepender(filename, line):

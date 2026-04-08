@@ -1276,7 +1276,8 @@ int main(int argc, char *argv[]) {
         topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
         /** ASSUME: fixed one-hop delay across network */
-        assert(std::to_string(one_hop_delay) + "ns" == link_delay);
+        // DISABLED: allow different link delays (10ns, 300ns, etc.)
+        // assert(std::to_string(one_hop_delay) + "ns" == link_delay);
 
         link_pairs.push_back(std::make_pair(src, dst));
         Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);
@@ -1437,6 +1438,8 @@ int main(int argc, char *argv[]) {
     topo2bdpMap[std::string("fat_k8_100G_400G_OS10")] = 153000;    // OS=10, 1280 hosts, 400G switch links (actual calculated BDP)
     topo2bdpMap[std::string("fat_k16_100G_400G_OS1.25")] = 153000;    // k=16, OS=1.25, 1280 hosts, 400G switch links
     topo2bdpMap[std::string("fat_k16_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=16, 5pods, 256/pod, 1280 hosts
+    topo2bdpMap[std::string("fat_k16_5pods_256perPod_400G_400G_OS1")] = 70000;   // k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=1400ns
+    topo2bdpMap[std::string("topo_1280_400G_400G_OS1")] = 70000;               // 1280 hosts, 5pods, all 400G, RTT=1400ns
     topo2bdpMap[std::string("fat_k8_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=8, 5pods, 256/pod, 1280 hosts
 
     // topology_file
@@ -1575,15 +1578,28 @@ int main(int argc, char *argv[]) {
          * Detect topology based on total number of switches:
          * - k=8, 5pods: 56 switches (20 ToR, 20 Agg, 16 Core)
          * - k=16, 5pods: 144 switches (40 ToR, 40 Agg, 64 Core)
+         * - topo_1280: 576 switches (160 ToR, 160 Agg, 256 Core)
          */
         bool is_k16_5pods = (switch_num == 144);  // k=16, 5pods topology
+        bool is_topo_1280 = (switch_num == 576);  // topo_1280_400G_400G_OS1 topology
         for (uint32_t i = 0; i < n.GetN(); i++) {
             Ptr<Node> node = n.Get(i);
             if (node->GetNodeType() == 1) {  // Switch node
                 Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
                 uint32_t swId = sw->GetId();
                 if (!sw->m_isToR) {  // Not ToR, determine if Aggregation or Core
-                    if (is_k16_5pods) {
+                    if (is_topo_1280) {
+                        // topo_1280: Hosts 0-1279, ToR 1280-1439, Agg 1440-1599, Core 1600-1855
+                        if (swId >= 1280 && swId < 1440) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1440 && swId < 1600) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1600 && swId < 1856) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    } else if (is_k16_5pods) {
                         // k=16, 5pods: Hosts 0-1279, ToR 1280-1319, Agg 1320-1359, Core 1360-1423
                         if (swId >= 1280 && swId < 1320) {
                             sw->SetSwitchType(SWITCH_TYPE_TOR);

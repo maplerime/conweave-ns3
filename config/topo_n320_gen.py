@@ -81,7 +81,7 @@ def generate_links(server_ids, tor_ids, agg_ids, core_ids):
                 if agg_idx < len(core_groups):
                     core_group = core_groups[agg_idx]
                     for core in core_group:
-                        links.append((agg, core, 400, 300, 0.0))
+                        links.append((agg, core, 400, 100, 0.0))
     # write_test_f(links)
     # return links
 

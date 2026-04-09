@@ -123,8 +123,8 @@ topo2bdp = {
     "fat_k8_100G_400G_OS10": 153000,  # 3-tier -> 100G host, 400G switch links, OS=10, 1280 hosts (actual calculated BDP)
     "fat_k16_100G_400G_OS1.25": 153000,  # k=16, 100G host, 400G switch, OS=1.25, 1280 hosts
     "fat_k16_5pods_256perPod_100G_400G_OS1": 153000,  # k=16, 5pods, 256/pod, 1280 hosts
-    "fat_k16_5pods_256perPod_400G_400G_OS1": 70000,   # k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=1400ns
-    "topo_1280_400G_400G_OS1": 70000,               # 1280 hosts, 5pods, all 400G, RTT=1400ns
+    "fat_k16_5pods_256perPod_400G_400G_OS1": 18000,   # k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=360ns
+    "topo_1280_400G_400G_OS1": 18000,               # 1280 hosts, 5pods, all 400G, RTT=360ns
     "fat_k8_5pods_256perPod_100G_400G_OS1": 153000,  # k=8, 5pods, 256/pod, 1280 hosts
 }
 

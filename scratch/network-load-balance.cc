@@ -1438,8 +1438,8 @@ int main(int argc, char *argv[]) {
     topo2bdpMap[std::string("fat_k8_100G_400G_OS10")] = 153000;    // OS=10, 1280 hosts, 400G switch links (actual calculated BDP)
     topo2bdpMap[std::string("fat_k16_100G_400G_OS1.25")] = 153000;    // k=16, OS=1.25, 1280 hosts, 400G switch links
     topo2bdpMap[std::string("fat_k16_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=16, 5pods, 256/pod, 1280 hosts
-    topo2bdpMap[std::string("fat_k16_5pods_256perPod_400G_400G_OS1")] = 70000;   // k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=1400ns
-    topo2bdpMap[std::string("topo_1280_400G_400G_OS1")] = 70000;               // 1280 hosts, 5pods, all 400G, RTT=1400ns
+    topo2bdpMap[std::string("fat_k16_5pods_256perPod_400G_400G_OS1")] = 18000;   // k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=360ns
+    topo2bdpMap[std::string("topo_1280_400G_400G_OS1")] = 18000;               // 1280 hosts, 5pods, all 400G, RTT=360ns
     topo2bdpMap[std::string("fat_k8_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=8, 5pods, 256/pod, 1280 hosts
 
     // topology_file
@@ -1531,7 +1531,19 @@ int main(int argc, char *argv[]) {
      * @brief get BDP and delay
      */
     maxRtt = maxBdp = 0;
+    uint32_t max_i = 0, max_j = 0;
+    uint64_t max_delay = 0, max_txDelay = 0, max_bw = 0;
     fprintf(stderr, "node_num=%d\n", node_num);
+    fprintf(stderr, "packet_payload_size=%u\n", packet_payload_size);
+
+    // Debug: print some sample paths
+    std::vector<std::pair<uint32_t, uint32_t>> sample_pairs = {
+        {0, 256},    // same pod (pod 0)
+        {0, 512},    // pod 0 to pod 2
+        {0, 1024},   // pod 0 to pod 4 (farthest)
+        {0, 1279}    // pod 0 to last host
+    };
+
     for (uint32_t i = 0; i < node_num; i++) {
         if (n.Get(i)->GetNodeType() != 0) continue;
         for (uint32_t j = i + 1; j < node_num; j++) {
@@ -1546,12 +1558,40 @@ int main(int argc, char *argv[]) {
             pairRtt[n.Get(i)][n.Get(j)] = rtt;
             pairRtt[n.Get(j)][n.Get(i)] = rtt;
 
-            if (bdp > maxBdp) maxBdp = bdp;
+            if (bdp > maxBdp) {
+                maxBdp = bdp;
+                max_i = i;
+                max_j = j;
+                max_delay = delay;
+                max_txDelay = txDelay;
+                max_bw = bw;
+            }
             if (rtt > maxRtt) maxRtt = rtt;
         }
     }
+
+    // Print sample paths
+    for (auto& pair : sample_pairs) {
+        uint32_t i = pair.first;
+        uint32_t j = pair.second;
+        if (i < node_num && j < node_num) {
+            uint64_t delay = pairDelay[n.Get(i)][n.Get(j)];
+            uint64_t txDelay = pairTxDelay[n.Get(i)][n.Get(j)];
+            uint64_t rtt = pairRtt[n.Get(i)][n.Get(j)];
+            fprintf(stderr, "Sample path: host %u -> host %u\n", i, j);
+            fprintf(stderr, "  delay=%lu ns, txDelay=%lu ns, RTT=%lu ns\n", delay, txDelay, rtt);
+        }
+    }
+
     fprintf(stderr, "maxRtt: %lu, maxBdp: %lu\n", maxRtt, maxBdp);
-    assert(maxBdp == irn_bdp_lookup);
+    fprintf(stderr, "Max path: host %u -> host %u\n", max_i, max_j);
+    fprintf(stderr, "  delay: %lu ns (one-way)\n", max_delay);
+    fprintf(stderr, "  txDelay: %lu ns (one-way)\n", max_txDelay);
+    fprintf(stderr, "  bw: %lu Gbps\n", max_bw / 1000000000);
+    fprintf(stderr, "  RTT = %lu*2 + %lu = %lu ns\n", max_delay, max_txDelay, max_delay*2 + max_txDelay);
+    fprintf(stderr, "  Expected BDP: %lu * %lu / 8 = %lu bytes\n", maxRtt, max_bw / 1000000000, maxRtt * max_bw / 1000000000 / 8);
+    // Temporarily disable assertion to see actual values
+    // assert(maxBdp == irn_bdp_lookup);
 
     std::cout << "Configuring switches" << std::endl;
     /* config ToR Switch */

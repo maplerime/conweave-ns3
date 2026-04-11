@@ -73,8 +73,9 @@ void SwitchMmu::InitSwitch(void) {
                                                     // static thresholds anymore
         m_port_max_shared_cell = m_maxBufferBytes;
     } else {
-        m_pg_shared_limit_cell = 20 * MTU;    // max buffer for an ingress pg
-        m_port_max_shared_cell = 4800 * MTU;  // max buffer for an ingress port
+        // Static PFC thresholds: 600KB pause, 400KB resume
+        m_pg_shared_limit_cell = 600 * 1024;   // 600KB - pause threshold per PG
+        m_port_max_shared_cell = 4800 * MTU;   // max buffer for an ingress port
     }
 
     for (uint32_t i = 0; i < pCnt; i++)  // port 0 is not used
@@ -108,8 +109,9 @@ void SwitchMmu::InitSwitch(void) {
         (m_activePortCnt)*std::max(qCnt * m_pg_min_cell,
                                    m_port_min_cell);  // 12000 * MTU; //ingress sp buffer threshold
     // still needs reset limits..
-    m_port_min_cell_off = 4700 * MTU;
-    m_pg_shared_limit_cell_off = m_pg_shared_limit_cell - 2 * MTU;
+    // Static PFC resume thresholds: 400KB
+    m_port_min_cell_off = 400 * 1024;          // 400KB - port-level resume threshold
+    m_pg_shared_limit_cell_off = 400 * 1024;   // 400KB - PG-level resume threshold
 
     // egress params
     m_op_buffer_shared_limit_cell =

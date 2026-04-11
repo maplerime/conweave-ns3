@@ -182,9 +182,8 @@ class RdmaQueuePair : public Object {
     inline bool CanIrnTransmit(uint32_t mtu) const {
         uint64_t len_left = m_size >= snd_nxt ? m_size - snd_nxt : 0;
 
-        return !irn.m_enabled ||
-               (GetIrnBytesInFlight() + ((len_left > mtu) ? mtu : len_left)) < irn.m_bdp ||
-               (irn.m_highest_ack + irn.m_bdp > snd_nxt);
+        // BDP flow control disabled - always allow transmission when IRN is enabled
+        return !irn.m_enabled || true;
     }
 };
 

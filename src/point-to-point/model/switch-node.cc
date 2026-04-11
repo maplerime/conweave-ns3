@@ -93,6 +93,15 @@ uint32_t SwitchNode::DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
 
     uint32_t hashVal = EcmpHash(buf.u8, 12, m_ecmpSeed);
     uint32_t idx = hashVal % nexthops.size();
+#if (DEBUG_FLOW_TRACKING == true)
+    std::cout << "[ECMP] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+              << "->" << Settings::hostIp2IdMap[ch.dip]
+              << " tag=" << (uint32_t)ch.udp.tag
+              << " hash=" << hashVal
+              << " path=" << idx << "/" << nexthops.size()
+              << " out=" << nexthops[idx]
+              << std::endl;
+#endif
     return nexthops[idx];
 }
 
@@ -154,6 +163,15 @@ uint32_t SwitchNode::DoLbDrill(Ptr<const Packet> p, const CustomHeader &ch,
         }
     }
     m_previousBestInterfaceMap[ch.dip] = leastLoadInterface;
+#if (DEBUG_FLOW_TRACKING == true)
+    std::cout << "[DRILL] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+              << "->" << Settings::hostIp2IdMap[ch.dip]
+              << " tag=" << (uint32_t)ch.udp.tag
+              << " out=" << leastLoadInterface
+              << " qlen=" << leastLoad
+              << " paths=" << nexthops.size()
+              << std::endl;
+#endif
     return leastLoadInterface;
 }
 

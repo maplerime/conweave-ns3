@@ -134,8 +134,8 @@ uint64_t RdmaQueuePair::GetOnTheFly() {
 }
 
 bool RdmaQueuePair::IsWinBound() {
-    uint64_t w = GetWin();
-    return w != 0 && GetOnTheFly() >= w;
+    // Window-based flow control disabled - always return false
+    return false;
 }
 
 uint64_t RdmaQueuePair::GetWin() {

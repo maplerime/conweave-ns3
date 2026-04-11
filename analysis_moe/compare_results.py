@@ -297,7 +297,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
     print("\n" + "="*135)
     print("FCT 性能对比 (Flow Completion Time)")
     print("="*135)
-    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(万)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*135)
 
     for key in sorted_keys:
@@ -308,11 +308,11 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         p50_delta = ((r.p50_fct - baseline_p50) / baseline_p50 * 100) if baseline_p50 > 0 else 0
         p99_delta = ((r.p99_fct - baseline_p99) / baseline_p99 * 100) if baseline_p99 > 0 else 0
 
-        avg_str = f"{int(r.avg_fct)} ({format_delta(avg_delta)})"
-        p50_str = f"{int(r.p50_fct)} ({format_delta(p50_delta)})"
-        p99_str = f"{int(r.p99_fct)} ({format_delta(p99_delta)})"
+        avg_str = f"{r.avg_fct:.2f} ({format_delta(avg_delta)})"
+        p50_str = f"{r.p50_fct:.2f} ({format_delta(p50_delta)})"
+        p99_str = f"{r.p99_fct:.2f} ({format_delta(p99_delta)})"
 
-        pfc_str = f"{r.pfc_count / 10000:.1f}"
+        pfc_str = f"{r.pfc_count:,}"
         timeout_str = f"{r.total_timeout:,}"
         avg_to_str = f"{r.avg_timeout:.2f}"
         max_to_str = f"{r.max_timeout}"
@@ -402,7 +402,7 @@ def print_summary(results: Dict[str, SimulationResult]):
 
     # Baseline: Hybrid(0) - pure MoE traffic without background flows
     if hybrid_0 and hybrid_0.avg_fct > 0:
-        print(f"• 基准 Hybrid(0) Avg FCT: {int(hybrid_0.avg_fct)}μs (纯MoE流量，无背景流)")
+        print(f"• 基准 Hybrid(0) Avg FCT: {hybrid_0.avg_fct:.2f}μs (纯MoE流量，无背景流)")
 
     # Comparison vs baseline at different FECMP_BG levels
     if hybrid_0 and conweave and conweave.avg_fct > 0:

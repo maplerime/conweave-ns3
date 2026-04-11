@@ -39,6 +39,9 @@ namespace ns3 {
 // Debug flag for tag-based routing (Hybrid, Inflex, ECMP-Conweave modes)
 #define DEBUG_TAG_ROUTING (true)
 
+// Debug flag for detailed flow tracking through switches
+#define DEBUG_FLOW_TRACKING (false)
+
 #define PARSE_FIVE_TUPLE(ch)                                                    \
     DEPARSE_FIVE_TUPLE(std::to_string(Settings::hostIp2IdMap[ch.sip]),          \
                        std::to_string(ch.udp.sport),                            \

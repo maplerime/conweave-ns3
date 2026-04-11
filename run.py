@@ -80,8 +80,8 @@ U_TARGET 0.95
 MULTI_RATE 0
 SAMPLE_FEEDBACK 0
 
-ENABLE_QCN 1
-USE_DYNAMIC_PFC_THRESHOLD 1
+ENABLE_QCN 0
+USE_DYNAMIC_PFC_THRESHOLD 0
 PACKET_PAYLOAD_SIZE 1000
 
 
@@ -142,7 +142,7 @@ def main():
     parser.add_argument('--cc', dest='cc', action='store',
                         default='dcqcn', help="hpcc/dcqcn/timely/dctcp (default: dcqcn)")
     parser.add_argument('--lb', dest='lb', action='store',
-                        default='fecmp', help="fecmp/pecmp/drill/conga (default: fecmp)")
+                        default='fecmp', help="fecmp/hybrid/inflex (default: fecmp)")
     parser.add_argument('--pfc', dest='pfc', action='store',
                         type=int, default=1, help="enable PFC (default: 1)")
     parser.add_argument('--irn', dest='irn', action='store',

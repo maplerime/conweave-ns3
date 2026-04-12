@@ -194,7 +194,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     qp->SetTag(tag);
     qp->SetTimeout(m_waitAckTimeout);
 
-    if (m_irn) {
+    if (m_irn && tag != 1) {
         qp->irn.m_enabled = m_irn;
         qp->irn.m_bdp = m_irn_bdp;
         qp->irn.m_rtoLow = m_irn_rtoLow;
@@ -327,7 +327,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
     }
 
     bool cnp_check = false;
-    int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check);
+    int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check, ch.udp.tag);
 
     if (x == 1 || x == 2 || x == 6) {  // generate ACK or NACK
         qbbHeader seqh;
@@ -337,7 +337,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
         seqh.SetDport(ch.udp.sport);
         seqh.SetIntHeader(ch.udp.ih);
 
-        if (m_irn) {
+        if (m_irn && ch.udp.tag != 1) {
             if (x == 2) {
                 seqh.SetIrnNack(ch.udp.seq);
                 seqh.SetIrnNackSize(payload_size);
@@ -529,7 +529,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
                                                qp->GetRto(m_mtu));
     }
 
-    if (m_irn) {
+    if (qp->irn.m_enabled) {
         if (ch.ack.irnNackSize != 0) {
             if (!qp->irn.m_recovery) {
                 qp->irn.m_recovery_seq = qp->snd_nxt;
@@ -599,10 +599,10 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
  * 4: OoO, but skip to send NACK as it is already NACKed.
  * 6: NACK but functionality is ACK (indicating all packets are received)
  */
-int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp) {
+int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp, uint16_t tag) {
     uint32_t expected = q->ReceiverNextExpectedSeq;
     if (seq == expected || (seq < expected && seq + size >= expected)) {
-        if (m_irn) {
+        if (m_irn && tag != 1) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
             q->ReceiverNextExpectedSeq += size - (expected - seq);
             {
@@ -636,7 +636,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         }
     } else if (seq > expected) {
         // Generate NACK
-        if (m_irn) {
+        if (m_irn && tag != 1) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
 
             // If the received packet is more than 64KB ahead of expected, send NACK immediately
@@ -671,7 +671,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         }
     } else {
         // Duplicate.
-        if (m_irn) {
+        if (m_irn && tag != 1) {
             // if (q->ReceiverNextExpectedSeq - 1 == q->m_milestone_rx) {
             // 	return 6; // This generates NACK, but actually functions as an ACK (indicates all
             // packet has been received)

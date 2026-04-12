@@ -86,7 +86,7 @@ class RdmaHw : public Object {
                           // packets. Only NIC can call this function. And do not call this upon PFC
 
     void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
-    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp);
+    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp, uint16_t tag);
     void AddHeader(Ptr<Packet> p, uint16_t protocolNumber);
     static uint16_t EtherToPpp(uint16_t protocol);
 

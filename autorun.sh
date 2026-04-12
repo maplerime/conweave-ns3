@@ -5,7 +5,7 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
     GREEN="\033[0;32m"
     YELLOW="\033[0;33m"
     NC="\033[0m" # No Color
-    printf "${!1}${2} ${NC}\n"
+    printf '%b%s %b\n' "${!1}" "${2}" "${NC}"
 }
 
 cecho "GREEN" "Running ECMP, Hybrid and Inflex MoE Experiments with BG Conflicts (Hybrid/Inflex: 4 fecmp_bg levels each)"
@@ -25,8 +25,7 @@ cecho "YELLOW" "----------------------------------\n"
 
 # Array to store PIDs of simulations
 declare -a SIM_PIDS
-declare -a SIM_DIRS
-declare -a SIM_NAMES
+declare -a MONITOR_PIDS
 
 # Function to monitor and kill simulation when MoE flows complete
 monitor_simulation() {
@@ -36,49 +35,51 @@ monitor_simulation() {
     local target_moe=16384
 
     # Wait for FCT file to be created
-    while [ ! -f "${output_dir}/${output_dir##*/}_out_fct.txt" ]; do
-        sleep 0.1
+    local fct_file="${output_dir}/${output_dir##*/}_out_fct.txt"
+    while [ ! -f "$fct_file" ]; do
+        sleep 0.2
         # Check if process is still running
         if ! kill -0 $pid 2>/dev/null; then
+            echo "  [$name] Simulation process ended (FCT file not created)"
             return
         fi
     done
 
-    local fct_file="${output_dir}/${output_dir##*/}_out_fct.txt"
+    echo "  [$name] FCT file created: $fct_file"
 
     # Monitor FCT file completion
     while true; do
         # Check if process is still running
         if ! kill -0 $pid 2>/dev/null; then
+            echo "  [$name] Simulation process ended"
             break
         fi
 
-        # Count completed MoE flows (excluding background flows)
-        # MoE flows have tag=2, BG flows have tag=1
-        # We count lines in FCT file (includes all flows, need to subtract BG)
+        # Count completed flows (all flows in FCT file)
         local total_flows=$(wc -l < "$fct_file" 2>/dev/null || echo "0")
 
-        # Extract number of background flows from directory name or use a fixed mapping
+        # Extract number of background flows from name
         local bg_count=0
-        if [[ "$name" == *"64fecmp"* ]]; then
+        if [[ "$name" == *"64fecmp"* ]] || [[ "$name" == *"64_"* ]]; then
             bg_count=64
-        elif [[ "$name" == *"128fecmp"* ]]; then
+        elif [[ "$name" == *"128fecmp"* ]] || [[ "$name" == *"128_"* ]]; then
             bg_count=128
-        elif [[ "$name" == *"192fecmp"* ]]; then
+        elif [[ "$name" == *"192fecmp"* ]] || [[ "$name" == *"192_"* ]]; then
             bg_count=192
         fi
 
-        local moe_flows=$total_flows
-
-        # If we have background flows, we need to subtract them
-        # But actually, we should check if MoE flows (16384) are complete
-        # FCT file contains all flows, so when total >= 16384 + bg_count, MoE is done
+        # Expected: MoE flows + background flows
         local expected=$((target_moe + bg_count))
 
         if [ "$total_flows" -ge "$expected" ]; then
-            cecho "GREEN" ">>> $name: MoE flows complete ($total_flows/$expected), killing simulation..."
+            cecho "GREEN" ">>> [$name] Flows complete ($total_flows/$expected), killing PID=$pid..."
             kill $pid 2>/dev/null
             break
+        fi
+
+        # Progress update every 5 seconds
+        if [ $((total_flows % 1000)) -eq 0 ] && [ "$total_flows" -gt 0 ]; then
+            echo "  [$name] Progress: $total_flows/$expected flows"
         fi
 
         sleep 0.5
@@ -98,26 +99,28 @@ run_simulation() {
     python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
     local sim_pid=$!
 
-    # Get the output directory (most recent one)
-    sleep 1  # Wait for directory to be created
-    local output_dir=$(ls -td mix/output/*/ | head -1)
-    output_dir="mix/output/${output_dir}"
+    # Wait a bit for simulation to create output directory
+    sleep 2
+
+    # Find the most recent output directory
+    local output_dir=$(ls -td mix/output/*/ 2>/dev/null | head -1)
+    if [ -z "$output_dir" ]; then
+        echo "  ERROR: Cannot find output directory for $name"
+        return
+    fi
+
+    # Remove trailing slash and get directory ID
+    output_dir="${output_dir%/}"
+
+    echo "  [$name] Output dir: $output_dir, PID: $sim_pid"
 
     # Start monitoring in background
     monitor_simulation $sim_pid "$output_dir" "$name" &
+    local mon_pid=$!
 
     SIM_PIDS+=($sim_pid)
-    SIM_DIRS+=("$output_dir")
-    SIM_NAMES+=("$name")
+    MONITOR_PIDS+=($mon_pid)
 }
-
-# ========== Pure ECMP mode ==========
-cecho "GREEN" "\n=========================================="
-cecho "GREEN" "Run Pure ECMP experiment"
-cecho "GREEN" "=========================================="
-
-FLOW_FILE="moe_1280group_256to8_8round_8KB_bg_conflict2_192fecmp.txt"
-run_simulation "fecmp" "" "$FLOW_FILE"
 
 # ========== Hybrid mode with different fecmp_bg levels ==========
 cecho "GREEN" "\n=========================================="
@@ -140,35 +143,20 @@ run_simulation "hybrid" "128" "$FLOW_FILE"
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
 run_simulation "hybrid" "192" "$FLOW_FILE"
 
-# ========== Inflex mode with different fecmp_bg levels ==========
-cecho "GREEN" "\n=========================================="
-cecho "GREEN" "Run Inflex experiments"
-cecho "GREEN" "=========================================="
-
-# fecmp_bg = 0 (all drill)
-FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
-run_simulation "inflex" "0" "$FLOW_FILE"
-
-# fecmp_bg = 64
-FLOW_FILE="moe_1280group_256to8_8round_8KB_bg_conflict2_64fecmp.txt"
-run_simulation "inflex" "64" "$FLOW_FILE"
-
-# fecmp_bg = 128
-FLOW_FILE="moe_1280group_256to8_8round_8KB_bg_conflict2_128fecmp.txt"
-run_simulation "inflex" "128" "$FLOW_FILE"
-
-# fecmp_bg = 192 (all fecmp)
-FLOW_FILE="moe_1280group_256to8_8round_8KB_bg_conflict2_192fecmp.txt"
-run_simulation "inflex" "192" "$FLOW_FILE"
-
-# Wait for all simulations to complete
-cecho "GREEN" "\n=========================================="
-cecho "GREEN" "Waiting for all simulations to complete..."
-cecho "GREEN" "=========================================="
+# Kill any remaining monitor processes
+cleanup() {
+    for mon_pid in "${MONITOR_PIDS[@]}"; do
+        kill $mon_pid 2>/dev/null
+    done
+}
+trap cleanup EXIT INT TERM
 
 for pid in "${SIM_PIDS[@]}"; do
     wait $pid
 done
+
+# Final cleanup
+cleanup
 
 cecho "GREEN" "\n=========================================="
 cecho "GREEN" "All experiments completed!"

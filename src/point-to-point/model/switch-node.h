@@ -63,8 +63,9 @@ class SwitchNode : public Node {
 
    private:
     int GetOutDev(Ptr<Packet>, CustomHeader &ch);
-    void SendToDev(Ptr<Packet> p, CustomHeader &ch);
+    void SendToDev(Ptr<Packet> p, CustomHeader &ch, uint32_t inPort);
     void SendToDevContinue(Ptr<Packet> p, CustomHeader &ch);
+    uint32_t m_currentInPort;  // Store input port for current packet
     static uint32_t EcmpHash(const uint8_t *key, size_t len, uint32_t seed);
     void CheckAndSendPfc(uint32_t inDev, uint32_t qIndex);
     void CheckAndSendResume(uint32_t inDev, uint32_t qIndex);
@@ -76,6 +77,9 @@ class SwitchNode : public Node {
     // Flow ECMP (lb_mode = 0)
     uint32_t DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
                           const std::vector<int> &nexthops);
+    // Flow ECMP with input port (includes in_port in hash)
+    uint32_t DoLbFlowECMPWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
+                                    const std::vector<int> &nexthops, uint32_t inPort);
     // DRILL (lb_mode = 2)
     uint32_t DoLbDrill(Ptr<const Packet> p, const CustomHeader &ch,
                        const std::vector<int> &nexthops);     // choose egress port

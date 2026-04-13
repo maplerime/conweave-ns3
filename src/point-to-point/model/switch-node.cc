@@ -105,6 +105,45 @@ uint32_t SwitchNode::DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
     return nexthops[idx];
 }
 
+/*-----------------FlowECMP with InPort-----------------*/
+uint32_t SwitchNode::DoLbFlowECMPWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
+                                             const std::vector<int> &nexthops, uint32_t inPort) {
+    // pick one next hop based on hash (including input port)
+    union {
+        uint8_t u8[4 + 4 + 2 + 2 + 4];  // sip + dip + sport + dport + inPort
+        uint32_t u32[4];
+    } buf;
+    buf.u32[0] = ch.sip;
+    buf.u32[1] = ch.dip;
+    if (ch.l3Prot == 0x6)
+        buf.u32[2] = ch.tcp.sport | ((uint32_t)ch.tcp.dport << 16);
+    else if (ch.l3Prot == 0x11)  // XXX RDMA traffic on UDP
+        buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+    else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD)  // ACK or NACK
+        buf.u32[2] = ch.ack.sport | ((uint32_t)ch.ack.dport << 16);
+    else {
+        std::cout << "[ERROR] Sw(" << m_id << ")," << PARSE_FIVE_TUPLE(ch)
+                  << "Cannot support other protoocls than TCP/UDP (l3Prot:" << ch.l3Prot << ")"
+                  << std::endl;
+        assert(false && "Cannot support other protoocls than TCP/UDP");
+    }
+    buf.u32[3] = inPort;  // Add input port to hash
+
+    uint32_t hashVal = EcmpHash(buf.u8, 16, m_ecmpSeed);  // 16 bytes with inPort
+    uint32_t idx = hashVal % nexthops.size();
+#if (DEBUG_FLOW_TRACKING == true)
+    std::cout << "[ECMP+InPort] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+              << "->" << Settings::hostIp2IdMap[ch.dip]
+              << " tag=" << (uint32_t)ch.udp.tag
+              << " inPort=" << inPort
+              << " hash=" << hashVal
+              << " path=" << idx << "/" << nexthops.size()
+              << " out=" << nexthops[idx]
+              << std::endl;
+#endif
+    return nexthops[idx];
+}
+
 /*-----------------CONGA-----------------*/
 uint32_t SwitchNode::DoLbConga(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
     return DoLbFlowECMP(p, ch, nexthops);  // flow ECMP (dummy)
@@ -348,11 +387,12 @@ void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex) {
 // This function can only be called in switch mode
 bool SwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet,
                                          CustomHeader &ch) {
-    SendToDev(packet, ch);
+    m_currentInPort = device->GetIfIndex();
+    SendToDev(packet, ch, m_currentInPort);
     return true;
 }
 
-void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch) {
+void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch, uint32_t inPort) {
     /** HIJACK: hijack the packet and run DoSwitchSend internally for Conga and ConWeave.
      * Note that DoLbConWeave() and DoLbConga() are flow-ECMP function for control packets
      * or intra-ToR traffic.
@@ -382,6 +422,7 @@ void SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader &ch) {
     // }
 
     // Others
+    m_currentInPort = inPort;
     SendToDevContinue(p, ch);
 }
 
@@ -453,9 +494,9 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
     // Hybrid mode (lb_mode=10): use tag field to determine per-flow load balancing
     if (Settings::lb_mode == 10) {
         if (control_pkt) {
-            return DoLbFlowECMP(p, ch, nexthops);
+            return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
         }
-        // tag == 0 (no tag) or tag == 2 -> DRILL, tag == 1 -> FlowECMP
+        // tag == 0 (no tag) or tag == 2 -> DRILL, tag == 1 -> FlowECMP with inPort
         if (ch.udp.tag == 0 || ch.udp.tag == 2) {
             Settings::tag2_drill_count++;
 #if (DEBUG_TAG_ROUTING == true)
@@ -465,9 +506,9 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         }
         Settings::tag1_ecmp_count++;
 #if (DEBUG_TAG_ROUTING == true)
-        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP+InPort (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
-        return DoLbFlowECMP(p, ch, nexthops);
+        return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing

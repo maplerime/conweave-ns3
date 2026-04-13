@@ -43,6 +43,15 @@ class SimulationResult:
         self.p99_fct = 0.0
         self.stddev_fct = 0.0
 
+        # Large flow FCT metrics (background flows, 8MB)
+        self.large_avg_fct = 0.0
+        self.large_p50_fct = 0.0
+        self.large_p99_fct = 0.0
+        self.large_total_flows = 0
+        self.large_total_timeout = 0
+        self.large_avg_timeout = 0.0
+        self.large_max_timeout = 0
+
         # PFC count
         self.pfc_count = 0
 
@@ -91,13 +100,17 @@ def calculate_percentiles(data) -> Tuple[float, float]:
     return float(sorted_data[p50_idx]), float(sorted_data[p99_idx])
 
 
-def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int, int]:
+def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, float, int, int, float, float, float, int, int, float, int]:
     """Read FCT file and return avg, p50, p99, stddev in microseconds, and timeout stats.
     Only includes expert flows (8KB flows), excludes background flows (8MB).
+    Also returns large flow (8MB background) FCT metrics.
     """
     fct_values = []
     timeout_counts = []
+    large_fct_values = []
+    large_timeout_counts = []
     EXPERT_FLOW_SIZE = 8192  # 8KB
+    LARGE_FLOW_SIZE = 8388608  # 8MB
 
     with open(fct_path, 'r') as f:
         for line in f:
@@ -105,24 +118,33 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
             if len(parts) >= 9:
                 # Column 5 is flow size in bytes
                 flow_size = int(parts[4])
-                # Only include expert flows (8KB), exclude background flows (8MB)
+                # Column 7 is FCT in nanoseconds
+                fct_ns = float(parts[6])
                 if flow_size == EXPERT_FLOW_SIZE:
-                    # Column 7 is FCT in nanoseconds
-                    fct_ns = float(parts[6])
+                    # Expert flow (8KB)
                     fct_values.append(fct_ns)
                     # Column 9 is timeout count
                     timeout_counts.append(int(parts[8]))
+                elif flow_size == LARGE_FLOW_SIZE:
+                    # Large background flow (8MB)
+                    large_fct_values.append(fct_ns)
+                    large_timeout_counts.append(int(parts[8]))
             elif len(parts) >= 7:
                 # Old format without timeout count
                 flow_size = int(parts[4])
+                fct_ns = float(parts[6])
                 if flow_size == EXPERT_FLOW_SIZE:
-                    fct_ns = float(parts[6])
                     fct_values.append(fct_ns)
                     timeout_counts.append(0)
+                elif flow_size == LARGE_FLOW_SIZE:
+                    large_fct_values.append(fct_ns)
+                    large_timeout_counts.append(0)
 
     total_flows = len(fct_values)
+    large_total_flows = len(large_fct_values)
+
     if not fct_values:
-        return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0, total_flows
+        return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0, total_flows, 0.0, 0.0, 0.0, large_total_flows, 0.0, 0.0, 0
 
     fct_values = np.array(fct_values)
     avg_us = np.mean(fct_values) / 1000  # Convert to microseconds
@@ -137,7 +159,24 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
     avg_timeout = np.mean(timeout_counts) if timeout_counts else 0.0
     max_timeout = max(timeout_counts) if timeout_counts else 0
 
-    return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout, total_flows
+    # Large flow FCT statistics
+    if large_fct_values:
+        large_fct_values = np.array(large_fct_values)
+        large_avg_us = np.mean(large_fct_values) / 1000
+        large_p50_us, large_p99_us = calculate_percentiles(large_fct_values)
+        large_p50_us /= 1000
+        large_p99_us /= 1000
+    else:
+        large_avg_us = 0.0
+        large_p50_us = 0.0
+        large_p99_us = 0.0
+
+    # Large flow timeout statistics
+    large_total_timeout = sum(large_timeout_counts)
+    large_avg_timeout = np.mean(large_timeout_counts) if large_timeout_counts else 0.0
+    large_max_timeout = max(large_timeout_counts) if large_timeout_counts else 0
+
+    return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout, total_flows, large_avg_us, large_p50_us, large_p99_us, large_total_flows, large_total_timeout, large_avg_timeout, large_max_timeout
 
 
 def read_pfc_count(pfc_path: str) -> int:
@@ -227,7 +266,9 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
         if fct_path.exists():
             (result.avg_fct, result.p50_fct, result.p99_fct, result.stddev_fct,
              result.total_timeout, result.avg_timeout, result.max_timeout,
-             result.total_flows) = read_fct_results(str(fct_path))
+             result.total_flows, result.large_avg_fct, result.large_p50_fct,
+             result.large_p99_fct, result.large_total_flows, result.large_total_timeout,
+             result.large_avg_timeout, result.large_max_timeout) = read_fct_results(str(fct_path))
         else:
             print(f"Warning: FCT file not found for {dir_id}")
 
@@ -295,7 +336,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
     baseline_p99 = baseline.p99_fct if baseline else 0
 
     print("\n" + "="*135)
-    print("FCT 性能对比 (Flow Completion Time)")
+    print("FCT 性能对比 (Flow Completion Time) - 小流 (8KB专家流)")
     print("="*135)
     print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*135)
@@ -320,6 +361,75 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         print(f"{key:<12} {r.total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {pfc_str:>10} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
 
     print("="*135)
+
+
+def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
+    """Print large flow FCT comparison table (8MB background flows)."""
+    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
+    def sort_key(x):
+        mode = x.split('(')[0]
+        if mode == 'Hybrid':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (0, bg)
+        elif mode == 'Hybrid-AS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (1, bg)
+        elif mode == 'Hybrid-SS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (2, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (3, bg)
+        elif mode == 'ECMP':
+            return (4, 0)
+        elif mode == 'Conweave':
+            return (5, 0)
+        return (6, 0)
+
+    sorted_keys = sorted(results.keys(), key=sort_key)
+
+    # Find baseline: use Hybrid(0) if available, otherwise first with large flows
+    baseline = None
+    for key in sorted_keys:
+        if results[key].large_total_flows > 0:
+            baseline = results[key]
+            break
+
+    baseline_avg = baseline.large_avg_fct if baseline else 0
+    baseline_p50 = baseline.large_p50_fct if baseline else 0
+    baseline_p99 = baseline.large_p99_fct if baseline else 0
+
+    print("\n" + "="*150)
+    print("FCT 性能对比 - 大流 (8MB背景流)")
+    print("="*150)
+    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'vs基线Avg':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*150)
+
+    for key in sorted_keys:
+        r = results[key]
+
+        if r.large_total_flows == 0:
+            continue  # Skip configurations with no large flows
+
+        # Calculate percentage deltas relative to baseline
+        if baseline_avg > 0:
+            avg_delta = ((r.large_avg_fct - baseline_avg) / baseline_avg * 100)
+            avg_str = f"{r.large_avg_fct:.2f} ({format_delta(avg_delta)})"
+        else:
+            avg_str = f"{r.large_avg_fct:.2f}"
+
+        p50_str = f"{r.large_p50_fct:.2f}"
+        p99_str = f"{r.large_p99_fct:.2f}"
+
+        vs_baseline = f"{((r.large_avg_fct - baseline_avg) / baseline_avg * 100):+.1f}%" if baseline_avg > 0 else "N/A"
+
+        large_to_str = f"{r.large_total_timeout:,}"
+        large_avg_to_str = f"{r.large_avg_timeout:.2f}"
+        large_max_to_str = f"{r.large_max_timeout}"
+
+        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
+
+    print("="*150)
 
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
@@ -513,6 +623,7 @@ def main():
 
     # Print tables
     print_fct_table(results)
+    print_large_flow_fct_table(results)
     print_qlen_table(results)
     print_summary(results)
 

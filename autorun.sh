@@ -20,12 +20,12 @@ cecho "YELLOW" "TOPOLOGY: ${TOPOLOGY}"
 cecho "YELLOW" "NETWORK LOAD: ${NETLOAD}"
 cecho "YELLOW" "TIME: ${RUNTIME}"
 cecho "YELLOW" "BG CONFLICT: 2% (16 SD pairs, 12 flows/pair for 192 BG)"
-cecho "YELLOW" "AUTO-STOP: Enabled (kills when 16384 MoE flows complete)"
+cecho "YELLOW" "AUTO-STOP: Disabled (auto-stop code commented out)"
 cecho "YELLOW" "----------------------------------\n"
 
 # Array to store PIDs of simulations
 declare -a SIM_PIDS
-declare -a MONITOR_PIDS
+# declare -a MONITOR_PIDS  # DISABLED: Auto-stop commented out
 
 # Function to monitor and kill simulation when MoE flows complete
 monitor_simulation() {
@@ -96,7 +96,11 @@ run_simulation() {
     cecho "YELLOW" "Running: $name, flow: $flow_file"
 
     # Run simulation in background
-    python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
+    if [ "$lb_mode" = "fecmp" ]; then
+        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file 2>&1 > /dev/null &
+    else
+        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
+    fi
     local sim_pid=$!
 
     # Wait a bit for simulation to create output directory
@@ -115,11 +119,12 @@ run_simulation() {
     echo "  [$name] Output dir: $output_dir, PID: $sim_pid"
 
     # Start monitoring in background
-    monitor_simulation $sim_pid "$output_dir" "$name" &
-    local mon_pid=$!
+    # DISABLED: Auto-stop commented out
+    # monitor_simulation $sim_pid "$output_dir" "$name" &
+    # local mon_pid=$!
 
     SIM_PIDS+=($sim_pid)
-    MONITOR_PIDS+=($mon_pid)
+    # MONITOR_PIDS+=($mon_pid)  # DISABLED: Auto-stop commented out
 }
 
 # ========== Hybrid mode with different fecmp_bg levels ==========
@@ -143,11 +148,20 @@ run_simulation "hybrid" "128" "$FLOW_FILE"
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
 run_simulation "hybrid" "192" "$FLOW_FILE"
 
+# ========== Pure ECMP mode ==========
+cecho "GREEN" "\n=========================================="
+cecho "GREEN" "Run Pure ECMP experiment"
+cecho "GREEN" "=========================================="
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+run_simulation "fecmp" "0" "$FLOW_FILE"
+
 # Kill any remaining monitor processes
 cleanup() {
-    for mon_pid in "${MONITOR_PIDS[@]}"; do
-        kill $mon_pid 2>/dev/null
-    done
+    # DISABLED: Auto-stop commented out
+    # for mon_pid in "${MONITOR_PIDS[@]}"; do
+    #     kill $mon_pid 2>/dev/null
+    # done
+    :
 }
 trap cleanup EXIT INT TERM
 

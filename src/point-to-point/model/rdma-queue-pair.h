@@ -131,6 +131,7 @@ class RdmaQueuePair : public Object {
     struct {
         uint64_t txTotalPkts{0};
         uint64_t txTotalBytes{0};
+        uint16_t ecmp_counter{0};  // ECMP hash packet counter
     } stat;
 
     // Implement Timeout according to IB Spec Vol. 1 C9-139.

@@ -20,12 +20,12 @@ cecho "YELLOW" "TOPOLOGY: ${TOPOLOGY}"
 cecho "YELLOW" "NETWORK LOAD: ${NETLOAD}"
 cecho "YELLOW" "TIME: ${RUNTIME}"
 cecho "YELLOW" "BG CONFLICT: 2% (16 SD pairs, 12 flows/pair for 192 BG)"
-cecho "YELLOW" "AUTO-STOP: Enabled (kills when 16384 MoE flows complete)"
+cecho "YELLOW" "AUTO-STOP: Disabled (auto-stop code commented out)"
 cecho "YELLOW" "----------------------------------\n"
 
 # Array to store PIDs of simulations
 declare -a SIM_PIDS
-declare -a MONITOR_PIDS
+# declare -a MONITOR_PIDS  # DISABLED: Auto-stop commented out
 
 # Function to monitor and kill simulation when MoE flows complete
 monitor_simulation() {
@@ -115,11 +115,12 @@ run_simulation() {
     echo "  [$name] Output dir: $output_dir, PID: $sim_pid"
 
     # Start monitoring in background
-    monitor_simulation $sim_pid "$output_dir" "$name" &
-    local mon_pid=$!
+    # DISABLED: Auto-stop commented out
+    # monitor_simulation $sim_pid "$output_dir" "$name" &
+    # local mon_pid=$!
 
     SIM_PIDS+=($sim_pid)
-    MONITOR_PIDS+=($mon_pid)
+    # MONITOR_PIDS+=($mon_pid)  # DISABLED: Auto-stop commented out
 }
 
 # ========== Inflex mode with different fecmp_bg levels ==========
@@ -150,9 +151,11 @@ cecho "GREEN" "=========================================="
 
 # Kill any remaining monitor processes on exit
 cleanup() {
-    for mon_pid in "${MONITOR_PIDS[@]}"; do
-        kill $mon_pid 2>/dev/null
-    done
+    # DISABLED: Auto-stop commented out
+    # for mon_pid in "${MONITOR_PIDS[@]}"; do
+    #     kill $mon_pid 2>/dev/null
+    # done
+    :
 }
 trap cleanup EXIT INT TERM
 

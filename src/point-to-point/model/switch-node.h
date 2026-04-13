@@ -76,6 +76,9 @@ class SwitchNode : public Node {
     // Flow ECMP (lb_mode = 0)
     uint32_t DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
                           const std::vector<int> &nexthops);
+    // Flow ECMP with ecmp_counter (for per-packet load balancing)
+    uint32_t DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHeader &ch,
+                                    const std::vector<int> &nexthops);
     // DRILL (lb_mode = 2)
     uint32_t DoLbDrill(Ptr<const Packet> p, const CustomHeader &ch,
                        const std::vector<int> &nexthops);     // choose egress port
@@ -147,6 +150,36 @@ class SwitchNode : public Node {
     // Probe generation - event driven (PFC change or queue occupancy > 60%)
     static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
     static const uint64_t PROBE_RATE_LIMIT_NS = 10000;     // 10us minimum between probes
+
+    /*----- Reorder Buffer for tag==1 flows (per-packet ECMP, array-based) -----*/
+    struct ReorderQueue {
+        std::array<Ptr<Packet>, 11> slots;  // Fixed size 11 array (one ECMP group)
+        std::array<bool, 11> used;             // Track which slots are occupied
+        uint16_t base_counter;                 // Base counter for this queue (group * 11)
+        uint32_t count;                        // Number of packets in this queue
+
+        ReorderQueue() : base_counter(0), count(0) {
+            used.fill(false);
+            slots.fill(nullptr);
+        }
+    };
+    struct ReorderBuffer {
+        std::array<ReorderQueue, 5> queues;    // Fixed 5 queues (5 groups)
+        uint16_t expected_counter;              // Expected ecmp_counter
+        bool reordering;                        // Is reordering active?
+
+        ReorderBuffer() : expected_counter(0), reordering(false) {
+            // queues initialized by constructor
+        }
+    };
+    // Per-flow reorder buffer: flowKey -> buffer
+    std::map<uint64_t, ReorderBuffer> m_reorderBuffers;
+    static const uint32_t MAX_QUEUES_PER_FLOW = 5;    // Max 5 queues per flow
+    static const uint32_t GROUP_SIZE = 11;             // 11 packets per group
+
+    // Reorder buffer methods
+    bool ProcessPacketWithReorder(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, uint32_t qIndex);
+    void FlushAllQueues(uint64_t flowKey, uint32_t outDev, uint32_t qIndex);
 
     // Queue monitoring methods
     void StartProbeGeneration();

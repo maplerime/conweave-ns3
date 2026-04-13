@@ -777,6 +777,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     seqTs.SetSeq(seq);
     seqTs.SetPG(qp->m_pg);
     seqTs.SetTag(qp->m_tag);  // Set tag field from queue pair
+    seqTs.SetEcmpCounter(qp->stat.ecmp_counter++);  // Set and increment ECMP counter
     p->AddHeader(seqTs);
     // add udp header
     UdpHeader udpHeader;

@@ -69,6 +69,47 @@ uint64_t SwitchNode::m_totalProbeReceived = 0;
 /**
  * @brief Load Balancing
  */
+uint32_t SwitchNode::DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHeader &ch,
+                                             const std::vector<int> &nexthops) {
+    // pick one next hop based on hash with ecmp_counter/11
+    union {
+        uint8_t u8[4 + 4 + 2 + 2 + 4];  // Added ecmp_counter/11
+        uint32_t u32[4];
+    } buf;
+    buf.u32[0] = ch.sip;
+    buf.u32[1] = ch.dip;
+    if (ch.l3Prot == 0x6)
+        buf.u32[2] = ch.tcp.sport | ((uint32_t)ch.tcp.dport << 16);
+    else if (ch.l3Prot == 0x11)  // XXX RDMA traffic on UDP
+        buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+    else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD)  // ACK or NACK
+        buf.u32[2] = ch.ack.sport | ((uint32_t)ch.ack.dport << 16);
+    else {
+        std::cout << "[ERROR] Sw(" << m_id << ")," << PARSE_FIVE_TUPLE(ch)
+                  << "Cannot support other protoocls than TCP/UDP (l3Prot:" << ch.l3Prot << ")"
+                  << std::endl;
+        assert(false && "Cannot support other protoocls than TCP/UDP");
+    }
+
+    // Add ecmp_counter/11 to hash input (every 11 packets share same hash value)
+    buf.u32[3] = ch.udp.ecmp_counter / 11;
+
+    uint32_t hashVal = EcmpHash(buf.u8, 16, m_ecmpSeed);
+    uint32_t idx = hashVal % nexthops.size();
+#if (DEBUG_FLOW_TRACKING == true)
+    std::cout << "[ECMP] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+              << "->" << Settings::hostIp2IdMap[ch.dip]
+              << " tag=" << (uint32_t)ch.udp.tag
+              << " counter=" << (uint32_t)ch.udp.ecmp_counter
+              << " hash=" << hashVal
+              << " path=" << idx << "/" << nexthops.size()
+              << " out=" << nexthops[idx]
+              << std::endl;
+#endif
+    return nexthops[idx];
+}
+
+/*-----------------ECMP (original, without counter)-----------------*/
 uint32_t SwitchNode::DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
                                   const std::vector<int> &nexthops) {
     // pick one next hop based on hash
@@ -403,6 +444,16 @@ void SwitchNode::SendToDevContinue(Ptr<Packet> p, CustomHeader &ch) {
                                                            // would be 3 (refer to trafficgen)
         }
 
+        // Check if reorder buffer should be used for tag==1 flows at destination ToR
+        if (m_isToR && ch.l3Prot == 0x11 && ch.udp.tag == 1 &&
+            m_isToR_hostIP.find(ch.dip) != m_isToR_hostIP.end()) {
+            // This is a destination ToR for a tag==1 flow, use reorder buffer
+            if (ProcessPacketWithReorder(p, ch, idx, qIndex)) {
+                return;  // Packet processed (either buffered or flushed)
+            }
+            // If ProcessPacketWithReorder returns false, fall through to normal send
+        }
+
         DoSwitchSend(p, ch, idx, qIndex);  // m_devices[idx]->SwitchSend(qIndex, p, ch);
         return;
     }
@@ -465,9 +516,9 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         }
         Settings::tag1_ecmp_count++;
 #if (DEBUG_TAG_ROUTING == true)
-        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP with counter (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
-        return DoLbFlowECMP(p, ch, nexthops);
+        return DoLbFlowECMPWithCounter(p, ch, nexthops);
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing
@@ -1143,6 +1194,180 @@ int SwitchNode::GetPortToSwitch(uint32_t switchId) {
     // This requires looking up the routing table or device connections
     // For now, return -1 (not found)
     return -1;
+}
+
+/*****************************************************************************/
+/* Reorder Buffer Implementation for tag==1 flows (Conweave-style FIFO)     */
+/* Based on ecmp_counter: every 11 packets share same hash value            */
+/*****************************************************************************/
+
+// Generate flow key for reorder buffer lookup
+static uint64_t GetReorderFlowKey(const CustomHeader &ch) {
+    // Use 5-tuple: sip, dip, sport, dport
+    uint64_t key = uint64_t(ch.sip) << 32;
+    key |= uint64_t(ch.dip);
+    key = (key << 32) | uint64_t(ch.udp.sport) << 16;
+    key |= uint64_t(ch.udp.dport);
+    return key;
+}
+
+bool SwitchNode::ProcessPacketWithReorder(Ptr<Packet> p, CustomHeader &ch,
+                                          uint32_t outDev, uint32_t qIndex) {
+    uint64_t flowKey = GetReorderFlowKey(ch);
+    uint16_t counter = ch.udp.ecmp_counter;  // Current packet's counter
+
+    // Find or create reorder buffer for this flow
+    auto &buf = m_reorderBuffers[flowKey];
+
+    // Calculate queue index and slot index using direct array indexing
+    // Use modulo to cycle through 5 queues: (counter/11) % 5
+    uint16_t queue_idx = (counter / 11) % 5;  // Which queue (0-4)
+    uint16_t slot_idx = counter % 11;         // Position within queue (0-10)
+    uint16_t expected_queue_idx = (buf.expected_counter / 11) % 5;
+
+    // Count number of queues currently in use
+    uint32_t queues_used = 0;
+    for (const auto &q : buf.queues) {
+        if (q.count > 0) queues_used++;
+    }
+
+    if (!buf.reordering) {
+        // No active reordering
+        if (counter == buf.expected_counter) {
+            // Expected packet, send directly
+            buf.expected_counter++;
+            DoSwitchSend(p, ch, outDev, qIndex);
+            return true;
+        } else if (counter > buf.expected_counter) {
+            // Out-of-order packet arrived - start reordering
+            std::cout << "[REORDER] Flow " << flowKey << ": OoO detected! expected="
+                      << buf.expected_counter << ", got=" << counter << std::endl;
+
+            buf.queues[queue_idx].slots[slot_idx] = p->Copy();
+            buf.queues[queue_idx].used[slot_idx] = true;
+            buf.queues[queue_idx].count++;
+            buf.reordering = true;
+            return true;
+        } else {
+            // Late packet, drop it
+            return true;
+        }
+    }
+
+    // Reordering is active
+    if (counter == buf.expected_counter) {
+        // Expected counter arrived - send directly
+        buf.expected_counter++;
+        DoSwitchSend(p, ch, outDev, qIndex);
+
+        // Only check queue head when expected_counter is divisible by 11 (completed a group)
+        if (buf.expected_counter % 11 == 0) {
+            uint16_t check_queue_idx = (buf.expected_counter / 11) % 5;
+            auto &q = buf.queues[check_queue_idx];
+
+            // Check if all 11 slots in this queue are filled (count == 11)
+            if (q.count == 11) {
+                // Flush entire queue
+                for (uint16_t slot = 0; slot < 11; slot++) {
+                    if (q.used[slot] && q.slots[slot] != nullptr) {
+                        Ptr<Packet> pkt = q.slots[slot];
+                        CustomHeader sendCh(CustomHeader::L2_Header | CustomHeader::L3_Header +
+                                          CustomHeader::L4_Header);
+                        pkt->PeekHeader(sendCh);
+                        DoSwitchSend(pkt, sendCh, outDev, qIndex);
+                        buf.expected_counter++;
+
+                        q.slots[slot] = nullptr;
+                        q.used[slot] = false;
+                    }
+                }
+                q.count = 0;
+                std::cout << "[REORDER] Flow " << flowKey << ": Flushed queue[" << check_queue_idx
+                          << "], expected now=" << buf.expected_counter << std::endl;
+            }
+
+            // Clean up if no more queues
+            uint32_t queues_used = 0;
+            for (const auto &queue : buf.queues) {
+                if (queue.count > 0) queues_used++;
+            }
+            if (queues_used == 0) {
+                std::cout << "[REORDER] Flow " << flowKey << ": All queues flushed, reordering done!" << std::endl;
+                buf.reordering = false;
+                m_reorderBuffers.erase(flowKey);
+            }
+        }
+        return true;
+    }
+
+    // Reordering is active - handle other packets
+    if (counter < buf.expected_counter) {
+        // Late packet, drop it
+        return true;
+    }
+
+    // counter > expected_counter - buffer this packet
+    // Check if slot already occupied
+    if (buf.queues[queue_idx].used[slot_idx]) {
+        // Duplicate, drop it
+        return true;
+    }
+
+    // Count queues in use
+    queues_used = 0;
+    for (const auto &q : buf.queues) {
+        if (q.count > 0) queues_used++;
+    }
+
+    if (queues_used >= MAX_QUEUES_PER_FLOW) {
+        // Buffer full - flush all and reset
+        std::cout << "[REORDER] Flow " << flowKey << ": Buffer full! Flushing all" << std::endl;
+        FlushAllQueues(flowKey, outDev, qIndex);
+        buf.reordering = false;
+        buf.expected_counter = counter + 1;
+        DoSwitchSend(p, ch, outDev, qIndex);
+        return true;
+    }
+
+    // Buffer the packet
+    buf.queues[queue_idx].slots[slot_idx] = p->Copy();
+    buf.queues[queue_idx].used[slot_idx] = true;
+    buf.queues[queue_idx].count++;
+    return true;
+}
+
+void SwitchNode::FlushAllQueues(uint64_t flowKey, uint32_t outDev, uint32_t qIndex) {
+    auto it = m_reorderBuffers.find(flowKey);
+    if (it == m_reorderBuffers.end()) {
+        return;
+    }
+
+    auto &buf = it->second;
+
+    // Send all packets in all queues (iterate through array slots)
+    for (uint32_t q_idx = 0; q_idx < MAX_QUEUES_PER_FLOW; q_idx++) {
+        auto &q = buf.queues[q_idx];
+        for (uint32_t slot = 0; slot < GROUP_SIZE; slot++) {
+            if (q.used[slot] && q.slots[slot] != nullptr) {
+                Ptr<Packet> pkt = q.slots[slot];
+                CustomHeader bufferedCh(CustomHeader::L2_Header | CustomHeader::L3_Header +
+                                       CustomHeader::L4_Header);
+                pkt->PeekHeader(bufferedCh);
+                DoSwitchSend(pkt, bufferedCh, outDev, qIndex);
+
+                // Clear slot
+                q.slots[slot] = nullptr;
+                q.used[slot] = false;
+            }
+        }
+        q.count = 0;
+        q.base_counter = 0;
+    }
+
+    buf.reordering = false;
+
+    // Clean up
+    m_reorderBuffers.erase(it);
 }
 
 } /* namespace ns3 */

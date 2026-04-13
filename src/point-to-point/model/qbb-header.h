@@ -43,6 +43,7 @@ public:
   void SetIntHeader(const IntHeader &_ih);
   void SetIrnNack(uint32_t seq);
   void SetIrnNackSize(size_t sz);
+  void SetEcmpCounter(uint16_t c);
 
 //Getters
   /**
@@ -57,6 +58,7 @@ public:
   uint8_t GetCnp() const;
   uint32_t GetIrnNack() const;
   size_t GetIrnNackSize() const;
+  uint16_t GetEcmpCounter() const;
 
   static TypeId GetTypeId (void);
   virtual TypeId GetInstanceTypeId (void) const;
@@ -74,6 +76,7 @@ private:
   IntHeader ih;
   uint32_t m_irn_nack;
   uint16_t m_irn_nack_size;
+  uint16_t m_ecmp_counter;  // ECMP hash counter
   bool enable_irn;
 };
 

@@ -29,6 +29,7 @@ uint32_t Settings::dropped_pkt_sw_egress = 0;
 uint64_t Settings::tag1_ecmp_count = 0;
 uint64_t Settings::tag2_inflex_count = 0;
 uint64_t Settings::tag2_drill_count = 0;
+uint64_t Settings::tag2_compare_count = 0;
 uint64_t Settings::tag2_adaptive_spray_count = 0;
 uint64_t Settings::tag2_random_spray_count = 0;
 

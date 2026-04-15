@@ -80,6 +80,9 @@ class SwitchNode : public Node {
     // Flow ECMP with input port (includes in_port in hash)
     uint32_t DoLbFlowECMPWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
                                     const std::vector<int> &nexthops, uint32_t inPort);
+    // Compare two paths (with and without inPort), select the better one
+    uint32_t DoLbFlowCompareWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
+                                       const std::vector<int> &nexthops, uint32_t inPort);
     // DRILL (lb_mode = 2)
     uint32_t DoLbDrill(Ptr<const Packet> p, const CustomHeader &ch,
                        const std::vector<int> &nexthops);     // choose egress port

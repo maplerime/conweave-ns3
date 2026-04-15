@@ -113,6 +113,8 @@ lb_modes = {
     "inflex": 12,  # Inflex mode: explicit path selection with queue monitoring
     "hybrid-as": 13,  # Hybrid-AS mode: Adaptive Spray for tag=2, ECMP for tag=1
     "hybrid-ss": 14,  # Hybrid-SS mode: Random Spray for tag=2, ECMP for tag=1
+    "necmp": 15,  # NECMP mode: ECMP with input port in hash
+    "mixhash": 16,  # MixHash mode: tag=1->ECMP with inPort, tag=2->DRILL
 }
 
 topo2bdp = {

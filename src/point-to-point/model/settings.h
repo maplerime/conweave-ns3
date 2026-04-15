@@ -150,6 +150,7 @@ class Settings {
     static uint64_t tag1_ecmp_count;          // tag=1 flows using ECMP
     static uint64_t tag2_inflex_count;        // tag=2 flows using Inflex
     static uint64_t tag2_drill_count;         // tag=2 flows using DRILL
+    static uint64_t tag2_compare_count;       // tag=2 flows using CompareWithInPort
     static uint64_t tag2_adaptive_spray_count; // tag=2 flows using Adaptive Spray
     static uint64_t tag2_random_spray_count;   // tag=2 flows using Random Spray
 };

@@ -144,6 +144,121 @@ uint32_t SwitchNode::DoLbFlowECMPWithInPort(Ptr<const Packet> p, const CustomHea
     return nexthops[idx];
 }
 
+/*-----------------FlowECMP Compare With InPort-----------------*/
+uint32_t SwitchNode::DoLbFlowCompareWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
+                                               const std::vector<int> &nexthops, uint32_t inPort) {
+    // Calculate hash WITHOUT inPort
+    union {
+        uint8_t u8[4 + 4 + 2 + 2];
+        uint32_t u32[3];
+    } buf_no_inport;
+    buf_no_inport.u32[0] = ch.sip;
+    buf_no_inport.u32[1] = ch.dip;
+    if (ch.l3Prot == 0x6)
+        buf_no_inport.u32[2] = ch.tcp.sport | ((uint32_t)ch.tcp.dport << 16);
+    else if (ch.l3Prot == 0x11)
+        buf_no_inport.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+    else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD)
+        buf_no_inport.u32[2] = ch.ack.sport | ((uint32_t)ch.ack.dport << 16);
+    else {
+        std::cout << "[ERROR] Sw(" << m_id << ")," << PARSE_FIVE_TUPLE(ch)
+                  << "Cannot support other protoocls than TCP/UDP (l3Prot:" << ch.l3Prot << ")"
+                  << std::endl;
+        assert(false && "Cannot support other protoocls than TCP/UDP");
+    }
+    uint32_t hashVal_no_inport = EcmpHash(buf_no_inport.u8, 12, m_ecmpSeed);
+    uint32_t idx_no_inport = hashVal_no_inport % nexthops.size();
+    uint32_t port_no_inport = nexthops[idx_no_inport];
+
+    // Calculate hash WITH inPort
+    union {
+        uint8_t u8[4 + 4 + 2 + 2 + 4];
+        uint32_t u32[4];
+    } buf_with_inport;
+    buf_with_inport.u32[0] = ch.sip;
+    buf_with_inport.u32[1] = ch.dip;
+    buf_with_inport.u32[2] = buf_no_inport.u32[2];  // sport/dport
+    buf_with_inport.u32[3] = inPort;
+    uint32_t hashVal_with_inport = EcmpHash(buf_with_inport.u8, 16, m_ecmpSeed);
+    uint32_t idx_with_inport = hashVal_with_inport % nexthops.size();
+    uint32_t port_with_inport = nexthops[idx_with_inport];
+
+    // If both paths are the same, return directly
+    if (port_no_inport == port_with_inport) {
+        return port_no_inport;
+    }
+
+    // Get queue length and check PFC paused status for both ports
+    uint32_t qlen_no_inport = 0;
+    uint32_t qlen_with_inport = 0;
+    bool paused_no_inport = false;
+    bool paused_with_inport = false;
+
+    // Helper function to check port status
+    auto check_port_status = [&](uint32_t port) -> std::pair<bool, uint32_t> {
+        bool is_paused = false;
+        uint32_t qlen = 0;
+        Ptr<NetDevice> dev = GetDevice(port);
+        if (dev) {
+            Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
+            if (qbb) {
+                Ptr<BEgressQueue> queue = qbb->GetQueue();
+                if (queue) {
+                    qlen = queue->GetNBytesTotal();
+                }
+                // Check PFC paused state: iterate through all qIndex for this port
+                uint32_t qCnt = m_mmu->qCnt;
+                for (uint32_t qIndex = 0; qIndex < qCnt; qIndex++) {
+                    if (m_mmu->paused[port][qIndex]) {
+                        is_paused = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return {is_paused, qlen};
+    };
+
+    auto status_no_inport = check_port_status(port_no_inport);
+    paused_no_inport = status_no_inport.first;
+    qlen_no_inport = status_no_inport.second;
+
+    auto status_with_inport = check_port_status(port_with_inport);
+    paused_with_inport = status_with_inport.first;
+    qlen_with_inport = status_with_inport.second;
+
+    // Decision logic:
+    // 1. If one is PFC paused and the other is not, choose the non-paused one
+    // 2. Otherwise, choose the one with shorter queue
+    uint32_t selected_port;
+
+    if (paused_no_inport != paused_with_inport) {
+        // One is paused, choose the non-paused one
+        selected_port = paused_no_inport ? port_with_inport : port_no_inport;
+#if (DEBUG_FLOW_TRACKING == true)
+        std::cout << "[CompareWithInPort] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+                  << "->" << Settings::hostIp2IdMap[ch.dip]
+                  << " port_no_inport=" << port_no_inport << "(paused=" << paused_no_inport << ", qlen=" << qlen_no_inport << ")"
+                  << " port_with_inport=" << port_with_inport << "(paused=" << paused_with_inport << ", qlen=" << qlen_with_inport << ")"
+                  << " selected=" << selected_port << " (PFC avoidance)"
+                  << std::endl;
+#endif
+    } else {
+        // Both have same PFC status, choose shorter queue
+        selected_port = qlen_no_inport <= qlen_with_inport ? port_no_inport : port_with_inport;
+#if (DEBUG_FLOW_TRACKING == true)
+        std::cout << "[CompareWithInPort] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+                  << "->" << Settings::hostIp2IdMap[ch.dip]
+                  << " port_no_inport=" << port_no_inport << "(paused=" << paused_no_inport << ", qlen=" << qlen_no_inport << ")"
+                  << " port_with_inport=" << port_with_inport << "(paused=" << paused_with_inport << ", qlen=" << qlen_with_inport << ")"
+                  << " selected=" << selected_port << " (queue comparison)"
+                  << std::endl;
+#endif
+    }
+
+    return selected_port;
+}
+
 /*-----------------CONGA-----------------*/
 uint32_t SwitchNode::DoLbConga(Ptr<Packet> p, CustomHeader &ch, const std::vector<int> &nexthops) {
     return DoLbFlowECMP(p, ch, nexthops);  // flow ECMP (dummy)
@@ -387,7 +502,15 @@ void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex) {
 // This function can only be called in switch mode
 bool SwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet,
                                          CustomHeader &ch) {
-    m_currentInPort = device->GetIfIndex();
+    // Get the local logical port index on this switch (not global device index)
+    uint32_t localInPort = 0;
+    for (uint32_t i = 0; i < GetNDevices(); i++) {
+        if (m_devices[i] == device) {
+            localInPort = i;  // This is the logical port number on this switch
+            break;
+        }
+    }
+    m_currentInPort = localInPort;
     SendToDev(packet, ch, m_currentInPort);
     return true;
 }
@@ -493,21 +616,39 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
 
     // Hybrid mode (lb_mode=10): use tag field to determine per-flow load balancing
     if (Settings::lb_mode == 10) {
+        // Both control packets and tag=1 use DoLbFlowECMP (no inPort)
+        if (control_pkt || ch.udp.tag == 1) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // tag == 0 (no tag) or tag == 2 -> DRILL
+        Settings::tag2_drill_count++;
+#if (DEBUG_TAG_ROUTING == true)
+        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
+#endif
+        return DoLbDrill(p, ch, nexthops);
+    }
+
+    // MixHash mode (lb_mode=16): mix of ECMP with inPort and DRILL
+    if (Settings::lb_mode == 16) {
+        // Control packets use ECMP without inPort (same as Hybrid)
         if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        // tag == 1 -> FlowECMP with inPort, tag == 2 -> DRILL
+        if (ch.udp.tag == 1) {
+            Settings::tag1_ecmp_count++;
+#if (DEBUG_TAG_ROUTING == true)
+            std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+InPort (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+#endif
             return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
-        }
-        // tag == 0 (no tag) or tag == 2 -> DRILL, tag == 1 -> FlowECMP with inPort
-        if (ch.udp.tag == 0 || ch.udp.tag == 2) {
-            Settings::tag2_drill_count++;
+        } else if (ch.udp.tag == 2) {
+            Settings::tag2_compare_count++;
 #if (DEBUG_TAG_ROUTING == true)
-            std::cout << "[Hybrid] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
+            std::cout << "[MixHash] tag=" << ch.udp.tag << " using CompareWithInPort (total=" << Settings::tag2_compare_count << ")" << std::endl;
 #endif
-            return DoLbDrill(p, ch, nexthops);
+            return DoLbFlowCompareWithInPort(p, ch, nexthops, m_currentInPort);
         }
-        Settings::tag1_ecmp_count++;
-#if (DEBUG_TAG_ROUTING == true)
-        std::cout << "[Hybrid] tag=" << ch.udp.tag << " using ECMP+InPort (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
-#endif
+        // Default (tag == 0 or other): use ECMP with inPort
         return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
     }
 
@@ -583,6 +724,14 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         std::cout << "[Hybrid-SS] tag=" << ch.udp.tag << " using ECMP (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
         return DoLbFlowECMP(p, ch, nexthops);
+    }
+
+    // NECMP mode (lb_mode=15): control packets use ECMP, data packets use ECMP with inPort
+    if (Settings::lb_mode == 15) {
+        if (control_pkt) {
+            return DoLbFlowECMP(p, ch, nexthops);
+        }
+        return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
     }
 
     // Original modes

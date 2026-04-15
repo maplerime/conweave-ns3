@@ -113,8 +113,8 @@ int RdmaEgressQueue::GetNextQindex(bool paused[]) {
         if (m_qpGrp->IsQpFinished((qIndex + m_rrlast) % fcount)) continue;
         Ptr<RdmaQueuePair> qp = m_qpGrp->Get((qIndex + m_rrlast) % fcount);
         bool cond1 = !paused[qp->m_pg];
-        bool cond_window_allowed =
-            (!qp->IsWinBound() && (!qp->irn.m_enabled || qp->CanIrnTransmit(m_mtu)));
+        // In IRN mode, disable both window and BDP flow control
+        bool cond_window_allowed = qp->irn.m_enabled || !qp->IsWinBound();
         bool cond2 = (qp->GetBytesLeft() > 0 && cond_window_allowed);
 
         if (!cond2 && !m_qpGrp->IsQpFinished((qIndex + m_rrlast) % fcount)) {

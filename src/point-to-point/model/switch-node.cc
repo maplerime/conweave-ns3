@@ -188,44 +188,19 @@ uint32_t SwitchNode::DoLbFlowCompareWithInPort(Ptr<const Packet> p, const Custom
         return port_no_inport;
     }
 
-    // Get queue length and check PFC paused status for both ports
-    uint32_t qlen_no_inport = 0;
-    uint32_t qlen_with_inport = 0;
-    bool paused_no_inport = false;
-    bool paused_with_inport = false;
-
-    // Helper function to check port status
-    auto check_port_status = [&](uint32_t port) -> std::pair<bool, uint32_t> {
-        bool is_paused = false;
-        uint32_t qlen = 0;
-        Ptr<NetDevice> dev = GetDevice(port);
-        if (dev) {
-            Ptr<QbbNetDevice> qbb = DynamicCast<QbbNetDevice>(dev);
-            if (qbb) {
-                Ptr<BEgressQueue> queue = qbb->GetQueue();
-                if (queue) {
-                    qlen = queue->GetNBytesTotal();
-                }
-                // Check PFC paused state: iterate through all qIndex for this port
-                uint32_t qCnt = m_mmu->qCnt;
-                for (uint32_t qIndex = 0; qIndex < qCnt; qIndex++) {
-                    if (m_mmu->paused[port][qIndex]) {
-                        is_paused = true;
-                        break;
-                    }
-                }
+    // Check PFC paused status for both ports first
+    auto is_pfc_paused = [&](uint32_t port) -> bool {
+        uint32_t qCnt = m_mmu->qCnt;
+        for (uint32_t qIndex = 0; qIndex < qCnt; qIndex++) {
+            if (m_mmu->paused[port][qIndex]) {
+                return true;
             }
         }
-        return {is_paused, qlen};
+        return false;
     };
 
-    auto status_no_inport = check_port_status(port_no_inport);
-    paused_no_inport = status_no_inport.first;
-    qlen_no_inport = status_no_inport.second;
-
-    auto status_with_inport = check_port_status(port_with_inport);
-    paused_with_inport = status_with_inport.first;
-    qlen_with_inport = status_with_inport.second;
+    bool paused_no_inport = is_pfc_paused(port_no_inport);
+    bool paused_with_inport = is_pfc_paused(port_with_inport);
 
     // Decision logic:
     // 1. If one is PFC paused and the other is not, choose the non-paused one
@@ -233,18 +208,20 @@ uint32_t SwitchNode::DoLbFlowCompareWithInPort(Ptr<const Packet> p, const Custom
     uint32_t selected_port;
 
     if (paused_no_inport != paused_with_inport) {
-        // One is paused, choose the non-paused one
+        // One is paused, choose the non-paused one (no need to check queue length)
         selected_port = paused_no_inport ? port_with_inport : port_no_inport;
 #if (DEBUG_FLOW_TRACKING == true)
         std::cout << "[CompareWithInPort] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
                   << "->" << Settings::hostIp2IdMap[ch.dip]
-                  << " port_no_inport=" << port_no_inport << "(paused=" << paused_no_inport << ", qlen=" << qlen_no_inport << ")"
-                  << " port_with_inport=" << port_with_inport << "(paused=" << paused_with_inport << ", qlen=" << qlen_with_inport << ")"
+                  << " port_no_inport=" << port_no_inport << "(paused=" << paused_no_inport << ")"
+                  << " port_with_inport=" << port_with_inport << "(paused=" << paused_with_inport << ")"
                   << " selected=" << selected_port << " (PFC avoidance)"
                   << std::endl;
 #endif
     } else {
-        // Both have same PFC status, choose shorter queue
+        // Both have same PFC status, compare queue lengths
+        uint32_t qlen_no_inport = CalculateInterfaceLoad(port_no_inport);
+        uint32_t qlen_with_inport = CalculateInterfaceLoad(port_with_inport);
         selected_port = qlen_no_inport <= qlen_with_inport ? port_no_inport : port_with_inport;
 #if (DEBUG_FLOW_TRACKING == true)
         std::cout << "[CompareWithInPort] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
@@ -731,7 +708,7 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
+        return DoLbFlowCompareWithInPort(p, ch, nexthops, m_currentInPort);
     }
 
     // Original modes

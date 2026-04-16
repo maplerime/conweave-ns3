@@ -25,11 +25,13 @@ class SimulationResult:
         # Map lb_mode to base name
         mode_names = {
             0: "FECMP",
+            1: "ECMP",
             2: "DRILL",
             3: "Conga",
             6: "Letflow",
             9: "Conweave",
-            15: "NECMP"
+            15: "NECMP",
+            16: "MixHash"
         }
         base_name = mode_names.get(lb_mode, f"Mode{lb_mode}")
 
@@ -55,6 +57,9 @@ class SimulationResult:
 
         # Total flows count
         self.total_flows = 0
+
+        # Retransmission (timeout) count
+        self.total_retrans = 0
 
 
 def parse_config(config_path: str) -> Tuple[int, int, int]:
@@ -91,16 +96,17 @@ def calculate_percentiles(data) -> Tuple[float, float, float]:
     return float(sorted_data[p50_idx]), float(sorted_data[p90_idx]), float(sorted_data[p99_idx])
 
 
-def read_fct_results(fct_path: str, size_min: int = 0, size_max: int = None) -> Tuple[float, float, float, float, float, int]:
-    """Read FCT file and return avg, p50, p90, p99, stddev in microseconds, and flow count.
+def read_fct_results(fct_path: str, size_min: int = 0, size_max: int = None) -> Tuple[float, float, float, float, float, int, int]:
+    """Read FCT file and return avg, p50, p90, p99, stddev in microseconds, flow count, and total retransmissions.
     Filters flows by size range [size_min, size_max].
     """
     fct_values = []
+    retrans_values = []
 
     with open(fct_path, 'r') as f:
         for line in f:
             parts = line.strip().split()
-            if len(parts) >= 7:
+            if len(parts) >= 9:
                 # Column 5 is flow size in bytes
                 flow_size = int(parts[4])
 
@@ -114,10 +120,15 @@ def read_fct_results(fct_path: str, size_min: int = 0, size_max: int = None) -> 
                 fct_ns = float(parts[6])
                 fct_values.append(fct_ns)
 
+                # Column 9 is retransmission (timeout) count
+                if len(parts) >= 9:
+                    retrans_values.append(int(parts[8]))
+
     total_flows = len(fct_values)
+    total_retrans = sum(retrans_values)
 
     if not fct_values:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, total_flows
+        return 0.0, 0.0, 0.0, 0.0, 0.0, total_flows, total_retrans
 
     fct_values = np.array(fct_values)
     avg_us = np.mean(fct_values) / 1000  # Convert to microseconds
@@ -128,7 +139,7 @@ def read_fct_results(fct_path: str, size_min: int = 0, size_max: int = None) -> 
     p90_us /= 1000
     p99_us /= 1000
 
-    return avg_us, p50_us, p90_us, p99_us, stddev_us, total_flows
+    return avg_us, p50_us, p90_us, p99_us, stddev_us, total_flows, total_retrans
 
 
 def read_pfc_count(pfc_path: str) -> int:
@@ -153,8 +164,8 @@ def scan_output_directory(base_path: str, size_min: int = 0, size_max: int = Non
         print(f"Error: Directory {base_path} does not exist")
         return results
 
-    # Target LB modes: FECMP(0), Letflow(6), Conga(3), Conweave(9), NECMP(15)
-    target_modes = {0, 3, 6, 9, 15}
+    # Target LB modes: FECMP(0), DRILL(2), Conga(3), Letflow(6), Conweave(9), NECMP(15), MixHash(16)
+    target_modes = {0, 2, 3, 6, 9, 15, 16}
 
     for sim_dir in sorted(base_dir.iterdir()):
         if not sim_dir.is_dir():
@@ -204,7 +215,7 @@ def scan_output_directory(base_path: str, size_min: int = 0, size_max: int = Non
         # Read FCT data with size filter
         if fct_path.exists():
             (result.avg_fct, result.p50_fct, result.p90_fct, result.p99_fct,
-             result.stddev_fct, result.total_flows) = read_fct_results(str(fct_path), size_min, size_max)
+             result.stddev_fct, result.total_flows, result.total_retrans) = read_fct_results(str(fct_path), size_min, size_max)
         else:
             print(f"Warning: FCT file not found for {dir_id}")
 
@@ -241,10 +252,10 @@ def format_size_range(size_min: int, size_max: Optional[int]) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult], section_title: str, size_min: int, size_max: Optional[int]):
     """Print FCT performance comparison table."""
-    # Define order for each flow control mode
-    pfc_order = ["FECMP", "Letflow", "Conga", "Conweave", "NECMP"]
-    irn_order = ["FECMP", "Letflow", "Conga", "Conweave", "NECMP"]
-    pfc_irn_order = ["FECMP", "Letflow", "Conga", "Conweave", "NECMP"]
+    # Define order for each flow control mode (added DRILL and MixHash)
+    pfc_order = ["FECMP", "DRILL", "Conga", "Letflow", "Conweave", "NECMP", "MixHash"]
+    irn_order = ["FECMP", "DRILL", "Conga", "Letflow", "Conweave", "NECMP", "MixHash"]
+    pfc_irn_order = ["FECMP", "DRILL", "Conga", "Letflow", "Conweave", "NECMP", "MixHash"]
 
     size_range_str = format_size_range(size_min, size_max)
 
@@ -264,11 +275,11 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*140)
+            print("\n" + "="*160)
             print(f"FCT 性能对比 (PFC=1, IRN=0) - {size_range_str}")
-            print("="*140)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10}")
-            print("-"*140)
+            print("="*160)
+            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
+            print("-"*160)
 
             for mode in pfc_order:
                 key = f"{mode}(PFC)"
@@ -279,9 +290,9 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
                 p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
                 p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
                 p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10}")
+                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*140)
+            print("="*160)
 
     # Section 2: IRN (IRN=1, PFC=0)
     has_irn = any(f"{mode}(IRN)" in results for mode in irn_order)
@@ -299,11 +310,11 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*140)
+            print("\n" + "="*160)
             print(f"FCT 性能对比 (IRN=1, PFC=0) - {size_range_str}")
-            print("="*140)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10}")
-            print("-"*140)
+            print("="*160)
+            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
+            print("-"*160)
 
             for mode in irn_order:
                 key = f"{mode}(IRN)"
@@ -314,9 +325,9 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
                 p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
                 p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
                 p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10}")
+                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*140)
+            print("="*160)
 
     # Section 3: PFC+IRN (IRN=1, PFC=1)
     has_pfc_irn = any(f"{mode}(PFC+IRN)" in results for mode in pfc_irn_order)
@@ -334,11 +345,11 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*140)
+            print("\n" + "="*160)
             print(f"FCT 性能对比 (PFC=1, IRN=1) - {size_range_str}")
-            print("="*140)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10}")
-            print("-"*140)
+            print("="*160)
+            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
+            print("-"*160)
 
             for mode in pfc_irn_order:
                 key = f"{mode}(PFC+IRN)"
@@ -349,9 +360,9 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
                 p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
                 p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
                 p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10}")
+                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*140)
+            print("="*160)
 
 
 def print_summary(results: Dict[str, SimulationResult], section_title: str):
@@ -361,7 +372,7 @@ def print_summary(results: Dict[str, SimulationResult], section_title: str):
             return ((new_val - base_val) / base_val * 100)
         return None
 
-    base_modes = ["FECMP", "Letflow", "Conga", "Conweave", "NECMP"]
+    base_modes = ["FECMP", "DRILL", "Conga", "Letflow", "Conweave", "NECMP", "MixHash"]
 
     # Section 1: PFC (IRN=0, PFC=1)
     has_pfc = any(f"{mode}(PFC)" in results for mode in base_modes)
@@ -374,7 +385,7 @@ def print_summary(results: Dict[str, SimulationResult], section_title: str):
             key = f"{base_mode}(PFC)"
             if key in results:
                 r = results[key]
-                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}")
+                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}, 重传: {r.total_retrans:,}")
 
     # Section 2: IRN (IRN=1, PFC=0)
     has_irn = any(f"{mode}(IRN)" in results for mode in base_modes)
@@ -387,7 +398,7 @@ def print_summary(results: Dict[str, SimulationResult], section_title: str):
             key = f"{base_mode}(IRN)"
             if key in results:
                 r = results[key]
-                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}")
+                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}, 重传: {r.total_retrans:,}")
 
     # Section 3: PFC+IRN (IRN=1, PFC=1)
     has_pfc_irn = any(f"{mode}(PFC+IRN)" in results for mode in base_modes)
@@ -400,7 +411,7 @@ def print_summary(results: Dict[str, SimulationResult], section_title: str):
             key = f"{base_mode}(PFC+IRN)"
             if key in results:
                 r = results[key]
-                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}")
+                print(f"• {base_mode} Avg FCT: {r.avg_fct:.2f}μs, PFC: {r.pfc_count:,}, 重传: {r.total_retrans:,}")
 
     # Cross-mode comparison
     if has_pfc and has_irn and has_pfc_irn:
@@ -457,7 +468,7 @@ def main():
     size_range_str = format_size_range(size_min, size_max)
     print(f"扫描目录: {output_dir}")
     print(f"流大小范围: {size_range_str}")
-    print(f"目标模式: FECMP(0), Letflow(6), Conga(3), Conweave(9), NECMP(15)")
+    print(f"目标模式: FECMP(0), DRILL(2), Conga(3), Letflow(6), Conweave(9), NECMP(15), MixHash(16)")
     print(f"支持流控模式: PFC, IRN, PFC+IRN")
 
     results = scan_output_directory(output_dir, size_min, size_max)

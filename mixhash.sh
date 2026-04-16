@@ -96,7 +96,11 @@ run_simulation() {
     cecho "YELLOW" "Running: $name, flow: $flow_file"
 
     # Run simulation in background
-    python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
+    if [ "$lb_mode" = "fecmp" ]; then
+        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file 2>&1 > /dev/null &
+    else
+        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
+    fi
     local sim_pid=$!
 
     # Wait a bit for simulation to create output directory
@@ -147,6 +151,8 @@ run_simulation "mixhash" "128" "$FLOW_FILE"
 # fecmp_bg = 192 (all fecmp)
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
 run_simulation "mixhash" "192" "$FLOW_FILE"
+
+run_simulation "fecmp" "0" "$FLOW_FILE"
 
 # Kill any remaining monitor processes
 cleanup() {

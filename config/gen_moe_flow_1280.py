@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 Generate MoE flow file for 1280-node 5-pod topology
-- Expert groups: 256 groups (randomly selected)
-- Each source group ONCE selects 8 receiver groups (from expert groups, excluding self)
-- 8 rounds: round 0 uses receiver[0], round 1 uses receiver[1], etc.
-- Each round: all 256 sources send to their designated receiver for that round
-
-NEW: --conflict mode creates ECMP hash conflicts in BACKGROUND flows only
+- Only use nodes where node_id % 4 == 0 (total 320 nodes)
+- Expert flows: randomly select 256 nodes from 320
+  - Each source sends to 64 random destinations (from remaining 255)
+  - 1 flow per destination
+- Background flows: from remaining 64 nodes, incrementally add flows
 """
 
 import random
@@ -24,13 +23,10 @@ FECMP_BG_VALUES = [0, 64, 128, 192] if args.fecmp_bg is None else [args.fecmp_bg
 TOTAL_NODES = 1280
 NUM_PODS = 5
 NODES_PER_POD = TOTAL_NODES // NUM_PODS
-GROUP_SIZE = 4
-GROUPS_PER_POD = NODES_PER_POD // GROUP_SIZE
-NUM_GROUPS = GROUPS_PER_POD * NUM_PODS
 
-EXPERT_GROUPS = 256
-RECEIVER_GROUPS_PER_SOURCE = 8
-ROUNDS = 8
+# Only use nodes where node_id % 4 == 0
+EXPERT_NODE_COUNT = 256
+RECEIVERS_PER_SOURCE = 64
 MOE_FLOW_SIZE = 8192
 BG_FLOW_SIZE = 8 * 1024 * 1024
 
@@ -39,146 +35,74 @@ TAG_EXPERT = 2
 TAG_BACKGROUND = 1
 BG_START_TIME = 2.0
 
-random.seed(2024)
+random.seed(2026)
 
-def get_group_nodes(group_id):
-    """Return list of 4 node IDs for the given group"""
-    pod = group_id // GROUPS_PER_POD
-    group_in_pod = group_id % GROUPS_PER_POD
-    start_node = pod * NODES_PER_POD + group_in_pod * GROUP_SIZE
-    return [start_node + i for i in range(GROUP_SIZE)]
+# Get all nodes where node_id % 4 == 0
+aligned_nodes = [i for i in range(TOTAL_NODES) if i % 4 == 0]
+print(f"Total aligned nodes (node_id %% 4 == 0): {len(aligned_nodes)}")
 
-# Select expert groups
-all_groups = list(range(NUM_GROUPS))
-expert_group_ids = sorted(random.sample(all_groups, EXPERT_GROUPS))
-remaining_groups = sorted([g for g in all_groups if g not in expert_group_ids])
+# Randomly select 256 nodes for expert flows
+expert_nodes = sorted(random.sample(aligned_nodes, EXPERT_NODE_COUNT))
+# Remaining 64 nodes for background flows
+bg_nodes = sorted([n for n in aligned_nodes if n not in expert_nodes])
 
-print(f"Expert Groups: {len(expert_group_ids)} groups")
-print(f"Background Groups: {len(remaining_groups)} groups")
+print(f"Expert nodes: {len(expert_nodes)}")
+print(f"Background nodes: {len(bg_nodes)}")
+print()
 
 if args.conflict:
     print(f"*** BG CONFLICT MODE: ratio={args.conflict_ratio} ***")
     print(f"    Background flows concentrated on fewer SD pairs for hash collisions")
 print()
 
-expert_groups_nodes = []
-expert_groups_ids_list = []
-for g in expert_group_ids:
-    expert_groups_nodes.append(get_group_nodes(g))
-    expert_groups_ids_list.append(g)
+# Generate background flows incrementally
+# First generate up to 192 unique SD pairs, then use incrementally
+bg_flows_all = []
+used_pairs = set()
+attempts = 0
+max_attempts = 192 * 10
 
-# Background flows
-# From remaining 64 groups, select nodes where src%4 == dst%4
-bg_flow_pools = {0: [], 64: [], 128: [], 192: []}
+while len(bg_flows_all) < 192 and attempts < max_attempts:
+    src = random.choice(bg_nodes)
+    dst = random.choice(bg_nodes)
+    if src != dst and (src, dst) not in used_pairs:
+        used_pairs.add((src, dst))
+        flow_entry = f"{src} {dst} {PG_VALUE} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {TAG_BACKGROUND}\n"
+        bg_flows_all.append(flow_entry)
+    attempts += 1
 
-bg_groups_nodes = [(g, get_group_nodes(g)) for g in remaining_groups]
+print(f"Generated {len(bg_flows_all)} unique background flow pairs")
 
-# Generate all possible background flows (src%4 == dst%4)
-all_bg_flows = []
-for src_group_id, src_group in bg_groups_nodes:
-    for dst_group_id, dst_group in bg_groups_nodes:
-        if src_group_id == dst_group_id:
-            continue
-        for node_idx in range(GROUP_SIZE):
-            src = src_group[node_idx]
-            dst = dst_group[node_idx]
-            all_bg_flows.append((src_group_id, dst_group_id, src, dst))
-
-if args.conflict:
-    # CONFLICT MODE: Concentrate background flows on fewer SD pairs
-    # Select a subset of source nodes to be "hot"
-    num_hot_src_groups = max(2, int(len(bg_groups_nodes) * args.conflict_ratio))
-    hot_src_group_indices = sorted(random.sample(range(len(bg_groups_nodes)), num_hot_src_groups))
-
-    # Select a subset of destination groups
-    num_hot_dst_groups = max(2, int(len(bg_groups_nodes) * args.conflict_ratio))
-    hot_dst_group_indices = sorted(random.sample(range(len(bg_groups_nodes)), num_hot_dst_groups))
-
-    print(f"BG Conflict: Using {num_hot_src_groups}/{len(bg_groups_nodes)} src groups, "
-          f"{num_hot_dst_groups}/{len(bg_groups_nodes)} dst groups")
-
-    # Generate hot SD pairs (unique src-dst node pairs)
-    hot_sd_pairs = []
-    for src_idx in hot_src_group_indices:
-        src_group_id, src_group = bg_groups_nodes[src_idx]
-        for dst_idx in hot_dst_group_indices:
-            dst_group_id, dst_group = bg_groups_nodes[dst_idx]
-            if src_group_id == dst_group_id:
-                continue
-            for node_idx in range(GROUP_SIZE):
-                src = src_group[node_idx]
-                dst = dst_group[node_idx]
-                hot_sd_pairs.append((src, dst))
-
-    print(f"Hot SD pairs: {len(hot_sd_pairs)} unique (src, dst) pairs")
-
-    # Generate background flows by REUSING the same SD pairs multiple times
-    # This creates hash conflicts since same (src, dst, port) hashes to same path
-    for count in [64, 128, 192]:
-        # Each SD pair will be used multiple times
-        flows_per_pair = (count + len(hot_sd_pairs) - 1) // len(hot_sd_pairs)  # ceiling division
-
-        for i in range(count):
-            # Reuse SD pairs cyclically to create multiple flows per pair
-            pair_idx = i % len(hot_sd_pairs)
-            src, dst = hot_sd_pairs[pair_idx]
-            flow_entry = f"{src} {dst} {PG_VALUE} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {TAG_BACKGROUND}\n"
-            bg_flow_pools[count].append(flow_entry)
-
-    # Analyze unique SD pairs in background flows
-    for count in [64, 128, 192]:
-        sd_pairs = set()
-        for line in bg_flow_pools[count]:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                sd_pairs.add((int(parts[0]), int(parts[1])))
-        print(f"  BG {count} flows: {len(sd_pairs)} unique SD pairs, avg {count/len(sd_pairs):.1f} flows/pair")
-else:
-    # Original mode: diverse selection
-    # Generate independent background flow pools for each size
-    # Each pool is generated independently with different shuffling
-    for count in [64, 128, 192]:
-        random.shuffle(all_bg_flows)
-        for i in range(min(count, len(all_bg_flows))):
-            src_group_id, dst_group_id, src, dst = all_bg_flows[i]
-            flow_entry = f"{src} {dst} {PG_VALUE} {BG_FLOW_SIZE} {BG_START_TIME:.9f} {TAG_BACKGROUND}\n"
-            bg_flow_pools[count].append(flow_entry)
+# Incremental background flows: 64, 128 (keep first 64), 192 (keep first 128)
+bg_flow_pools = {
+    0: [],
+    64: bg_flows_all[:64],
+    128: bg_flows_all[:128],
+    192: bg_flows_all[:192]
+}
 
 print(f"Background flow pools: 0/64/128/192 flows")
 print()
 
-# Each source group selects 8 receiver groups (one-time selection)
-source_to_receiver_groups = {}
-for src_group_id in expert_group_ids:
-    available = [g for g in expert_group_ids if g != src_group_id]
-    assigned = sorted(random.sample(available, RECEIVER_GROUPS_PER_SOURCE))
-    source_to_receiver_groups[src_group_id] = assigned
+# Generate MoE flows
+# Each source selects 64 random destinations (from remaining expert nodes)
+# 1 flow per destination
+source_to_receivers = {}
+for src in expert_nodes:
+    available = [d for d in expert_nodes if d != src]
+    receivers = sorted(random.sample(available, RECEIVERS_PER_SOURCE))
+    source_to_receivers[src] = receivers
 
-# Generate MoE flows (unchanged - always use original distribution)
-# 4 nodes take turns to send, 8 rounds total
-# Each source-target pair: node0 rounds 0,1; node1 rounds 2,3; node2 rounds 4,5; node3 rounds 6,7
-# Total: 256 sources × 8 targets × 8 rounds = 16384 flows
 moe_lines = []
-
-for src_idx, src_group_id in enumerate(expert_group_ids):
-    src_group_nodes = expert_groups_nodes[src_idx]
-
-    # Get the 8 target groups for this source
-    target_group_ids = source_to_receiver_groups[src_group_id]
-
-    for target_group_id in target_group_ids:
-        target_group_nodes = get_group_nodes(target_group_id)
-
-        # 8 rounds: 4 nodes take turns (each node does 2 rounds)
-        for round_id in range(ROUNDS):
-            node_idx = (round_id // 2) % GROUP_SIZE  # rounds 0,1->node0; 2,3->node1; 4,5->node2; 6,7->node3
-            src = src_group_nodes[node_idx]
-            dst = target_group_nodes[node_idx]
-            moe_lines.append(f"{src} {dst} {PG_VALUE} {MOE_FLOW_SIZE} {BG_START_TIME:.9f} {TAG_EXPERT}\n")
+for src in expert_nodes:
+    receivers = source_to_receivers[src]
+    for dst in receivers:
+        # 1 flow per source-destination pair
+        moe_lines.append(f"{src} {dst} {PG_VALUE} {MOE_FLOW_SIZE} {BG_START_TIME:.9f} {TAG_EXPERT}\n")
 
 total_moe_flows = len(moe_lines)
 print(f"Total MoE flows: {total_moe_flows} ({total_moe_flows * MOE_FLOW_SIZE / 1024:.1f} KB)")
-print(f"Pattern: 256 sources × 8 targets × 4 nodes × 8 rounds = {total_moe_flows} flows")
+print(f"Pattern: {EXPERT_NODE_COUNT} sources × {RECEIVERS_PER_SOURCE} receivers = {total_moe_flows} flows")
 print()
 
 # Generate files

@@ -37,7 +37,7 @@ namespace ns3 {
 #define SLB_DEBUG (false)
 
 // Debug flag for tag-based routing (Hybrid, Inflex, ECMP-Conweave modes)
-#define DEBUG_TAG_ROUTING (true)
+#define DEBUG_TAG_ROUTING (false)
 
 // Debug flag for detailed flow tracking through switches
 #define DEBUG_FLOW_TRACKING (false)

@@ -133,6 +133,9 @@ class RdmaQueuePair : public Object {
         uint64_t txTotalBytes{0};
     } stat;
 
+    // Per-flow ecmp_counter for mode=16 (mixhash) tag=1 flows
+    uint32_t m_ecmpCounter{0};
+
     // Implement Timeout according to IB Spec Vol. 1 C9-139.
     // For an HCA requester using Reliable Connection service, to detect missing responses,
     // every Send queue is required to implement a Transport Timer to time outstanding requests.

@@ -57,6 +57,9 @@ public:
   void SetTag (uint16_t tag);
   uint16_t GetTag () const;
 
+  void SetEcmpCounter (uint16_t ecmp_counter);
+  uint16_t GetEcmpCounter () const;
+
   static TypeId GetTypeId (void);
   virtual TypeId GetInstanceTypeId (void) const;
   virtual void Print (std::ostream &os) const;
@@ -69,6 +72,7 @@ private:
   uint32_t m_seq;
   uint16_t m_pg;
   uint16_t m_tag;  // Tag field for flow classification (e.g., 1=ECMP, 2=other)
+  uint16_t m_ecmp_counter;  // ECMP counter for hash variation
 public:
   IntHeader ih;
 };

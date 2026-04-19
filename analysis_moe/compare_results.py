@@ -53,7 +53,9 @@ class SimulationResult:
         self.large_max_timeout = 0
 
         # PFC count
-        self.pfc_count = 0
+        self.pfc_count = 0                    # Legacy: all PFC events
+        self.pfc_count_small = 0              # PFC at small flow completion times
+        self.pfc_count_large = 0              # All PFC events (for large flows)
 
         # Total flows count
         self.total_flows = 0
@@ -179,8 +181,86 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
     return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout, total_flows, large_avg_us, large_p50_us, large_p99_us, large_total_flows, large_total_timeout, large_avg_timeout, large_max_timeout
 
 
-def read_pfc_count(pfc_path: str) -> int:
-    """Count PFC events (number of lines in file)."""
+def read_pfc_count(pfc_path: str, fct_path: str = None,
+                    small_flow_timestamps: list = None,
+                    time_window_ns: int = 1000000) -> Tuple[int, int, int, int]:
+    """Count PFC events with different methods for small and large flows.
+
+    Args:
+        pfc_path: Path to PFC file
+        fct_path: Path to FCT file (optional, used to extract completion times)
+        small_flow_timestamps: List of (start_time, completion_time) tuples (optional)
+        time_window_ns: Time window in ns to match PFC events to completion times (default 1us)
+
+    Returns:
+        Tuple[int, int, int, int]: (small_flow_pfc_count, large_flow_pfc_count,
+                                     small_flow_time_range_ns, large_flow_time_range_ns)
+        - small_flow_pfc_count: PFC events during small flow active period
+        - large_flow_pfc_count: ALL PFC events (for large flow analysis)
+        - small_flow_time_range_ns: Time range covered by small flows
+        - large_flow_time_range_ns: Total simulation time range
+    """
+    # Parse PFC file to get all event timestamps
+    pfc_timestamps = []
+    with open(pfc_path, 'r') as f:
+        for line in f:
+            if line.strip():
+                parts = line.strip().split()
+                if len(parts) >= 1:
+                    try:
+                        pfc_timestamps.append(int(parts[0]))
+                    except ValueError:
+                        pass
+
+    if not pfc_timestamps:
+        return 0, 0, 0, 0
+
+    # Calculate total simulation time range from PFC events
+    sim_start = min(pfc_timestamps) if pfc_timestamps else 0
+    sim_end = max(pfc_timestamps) if pfc_timestamps else 0
+    total_time_range = sim_end - sim_start
+
+    # Get small flow time ranges if not provided
+    if small_flow_timestamps is None and fct_path:
+        small_flow_timestamps = []
+        EXPERT_FLOW_SIZE = 8192  # 8KB
+        LARGE_FLOW_SIZE = 8388608  # 8MB
+
+        with open(fct_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 7:
+                    flow_size = int(parts[4])
+                    flow_start_time = int(parts[5])
+                    fct_ns = int(parts[6])
+
+                    # Only small flows: store start and completion time
+                    if flow_size == EXPERT_FLOW_SIZE:
+                        completion_time = flow_start_time + fct_ns
+                        small_flow_timestamps.append((flow_start_time, completion_time))
+
+    # Count PFC for small flows: during the time range when small flows are active
+    if small_flow_timestamps:
+        # Find the overall time range when small flows are active
+        small_flow_start = min(ts[0] for ts in small_flow_timestamps)
+        small_flow_end = max(ts[1] for ts in small_flow_timestamps)
+        small_flow_time_range = small_flow_end - small_flow_start
+
+        # Count PFC events within small flow active time range
+        small_pfc_count = sum(1 for ts in pfc_timestamps
+                             if small_flow_start <= ts <= small_flow_end)
+    else:
+        small_pfc_count = 0
+        small_flow_time_range = 0
+
+    # Count PFC for large flows: ALL PFC events
+    large_pfc_count = len(pfc_timestamps)
+
+    return small_pfc_count, large_pfc_count, small_flow_time_range, total_time_range
+
+
+def read_pfc_count_simple(pfc_path: str) -> int:
+    """Simple PFC count: all events (legacy function for backward compatibility)."""
     count = 0
     with open(pfc_path, 'r') as f:
         for line in f:
@@ -272,9 +352,19 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
         else:
             print(f"Warning: FCT file not found for {dir_id}")
 
-        # Read PFC count
+        # Read PFC count with different methods for small and large flows
         if pfc_path.exists():
-            result.pfc_count = read_pfc_count(str(pfc_path))
+            if fct_path.exists():
+                # Use FCT file to get small flow time range
+                (result.pfc_count_small, result.pfc_count_large,
+                 _, _) = read_pfc_count(str(pfc_path), str(fct_path))
+                # Legacy: use large flow count for backward compatibility
+                result.pfc_count = result.pfc_count_large
+            else:
+                # No FCT file, use simple count
+                result.pfc_count = read_pfc_count_simple(str(pfc_path))
+                result.pfc_count_small = 0
+                result.pfc_count_large = result.pfc_count
         else:
             print(f"Warning: PFC file not found for {dir_id}")
 
@@ -338,7 +428,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
     print("\n" + "="*135)
     print("FCT 性能对比 (Flow Completion Time) - 小流 (8KB专家流)")
     print("="*135)
-    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(小)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*135)
 
     for key in sorted_keys:
@@ -353,7 +443,7 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         p50_str = f"{r.p50_fct:.2f} ({format_delta(p50_delta)})"
         p99_str = f"{r.p99_fct:.2f} ({format_delta(p99_delta)})"
 
-        pfc_str = f"{r.pfc_count:,}"
+        pfc_str = f"{r.pfc_count_small:,}"  # Use small flow PFC count for small flow table
         timeout_str = f"{r.total_timeout:,}"
         avg_to_str = f"{r.avg_timeout:.2f}"
         max_to_str = f"{r.max_timeout}"
@@ -402,7 +492,7 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
     print("\n" + "="*150)
     print("FCT 性能对比 - 大流 (8MB背景流)")
     print("="*150)
-    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'vs基线Avg':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(全部)':>10} {'vs基线Avg':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*150)
 
     for key in sorted_keys:
@@ -423,11 +513,12 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
 
         vs_baseline = f"{((r.large_avg_fct - baseline_avg) / baseline_avg * 100):+.1f}%" if baseline_avg > 0 else "N/A"
 
+        large_pfc_str = f"{r.pfc_count_large:,}"
         large_to_str = f"{r.large_total_timeout:,}"
         large_avg_to_str = f"{r.large_avg_timeout:.2f}"
         large_max_to_str = f"{r.large_max_timeout}"
 
-        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
+        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {large_pfc_str:>10} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
 
     print("="*150)
 
@@ -570,30 +661,45 @@ def print_summary(results: Dict[str, SimulationResult]):
         print(f"• Inflex vs Conweave 超时比例: {to_ratio:.2f}x")
 
     # PFC comparison
-    print("\n--- PFC事件统计 ---")
+    print("\n--- PFC事件统计 (小流:完成时统计, 大流:全部统计) ---")
     for mode_key, mode_name in modes_to_compare:
-        total_pfc = sum(r.pfc_count for k, r in results.items() if mode_key in k)
-        if total_pfc > 0:
-            print(f"• {mode_name} 总PFC: {total_pfc:,}")
+        total_pfc_small = sum(r.pfc_count_small for k, r in results.items() if mode_key in k)
+        total_pfc_large = sum(r.pfc_count_large for k, r in results.items() if mode_key in k)
+        if total_pfc_small > 0 or total_pfc_large > 0:
+            print(f"• {mode_name} 小流PFC: {total_pfc_small:,}, 大流PFC(全部): {total_pfc_large:,}")
 
-    total_hybrid_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
-    total_hybrid_as_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid-AS" in k)
-    total_hybrid_ss_pfc = sum(r.pfc_count for k, r in results.items() if "Hybrid-SS" in k)
-    total_conweave_pfc = sum(r.pfc_count for k, r in results.items() if "Conweave" in k)
-    total_inflex_pfc = sum(r.pfc_count for k, r in results.items() if "Inflex" in k)
+    total_hybrid_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_as_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid-AS" in k)
+    total_hybrid_as_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid-AS" in k)
+    total_hybrid_ss_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid-SS" in k)
+    total_hybrid_ss_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid-SS" in k)
+    total_conweave_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Conweave" in k)
+    total_conweave_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Conweave" in k)
+    total_inflex_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Inflex" in k)
+    total_inflex_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Inflex" in k)
 
-    if total_hybrid_pfc > 0 and total_conweave_pfc > 0:
-        pfc_ratio = total_conweave_pfc / total_hybrid_pfc
-        print(f"• Conweave vs Hybrid PFC比例: {pfc_ratio:.2f}x")
-    if total_hybrid_pfc > 0 and total_inflex_pfc > 0:
-        pfc_ratio = total_inflex_pfc / total_hybrid_pfc
-        print(f"• Inflex vs Hybrid PFC比例: {pfc_ratio:.2f}x")
-    if total_hybrid_pfc > 0 and total_hybrid_as_pfc > 0:
-        pfc_ratio = total_hybrid_as_pfc / total_hybrid_pfc
-        print(f"• Hybrid-AS vs Hybrid PFC比例: {pfc_ratio:.2f}x")
-    if total_hybrid_pfc > 0 and total_hybrid_ss_pfc > 0:
-        pfc_ratio = total_hybrid_ss_pfc / total_hybrid_pfc
-        print(f"• Hybrid-SS vs Hybrid PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_small > 0 and total_conweave_pfc_small > 0:
+        pfc_ratio = total_conweave_pfc_small / total_hybrid_pfc_small
+        print(f"• Conweave vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_small > 0 and total_inflex_pfc_small > 0:
+        pfc_ratio = total_inflex_pfc_small / total_hybrid_pfc_small
+        print(f"• Inflex vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_large > 0 and total_conweave_pfc_large > 0:
+        pfc_ratio = total_conweave_pfc_large / total_hybrid_pfc_large
+        print(f"• Conweave vs Hybrid 大流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_large > 0 and total_inflex_pfc_large > 0:
+        pfc_ratio = total_inflex_pfc_large / total_hybrid_pfc_large
+        print(f"• Inflex vs Hybrid 大流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_small > 0 and total_hybrid_as_pfc_small > 0:
+        pfc_ratio = total_hybrid_as_pfc_small / total_hybrid_pfc_small
+        print(f"• Hybrid-AS vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_small > 0 and total_hybrid_ss_pfc_small > 0:
+        pfc_ratio = total_hybrid_ss_pfc_small / total_hybrid_pfc_small
+        print(f"• Hybrid-SS vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_conweave_pfc_large > 0 and total_inflex_pfc_large > 0:
+        pfc_ratio = total_inflex_pfc_large / total_conweave_pfc_large
+        print(f"• Inflex vs Conweave 大流PFC比例: {pfc_ratio:.2f}x")
 
     print("="*100)
     print("="*70)

@@ -38,6 +38,39 @@ struct FlowEntry {
     uint8_t weight;     // Remaining sticky weight (default 4)
 };
 
+// Reorder statistics (public for access from simulation script)
+struct ReorderStats {
+    uint64_t total_buffered;       // Total packets buffered
+    uint64_t total_flushed;        // Total packets flushed from buffer
+    uint64_t total_dropped;        // Total packets dropped (queue full + mismatch)
+    uint64_t total_mismatch_drops; // Drops due to counter mismatch
+    uint32_t max_q_size;          // Maximum queue size observed
+    uint32_t active_flows;        // Number of flows with buffered packets
+};
+
+// Per-flow reorder statistics
+struct FlowReorderStats {
+    uint64_t packets_received;     // Total packets received for this flow
+    uint64_t packets_direct_sent;  // Packets sent directly (in order)
+    uint64_t packets_buffered;     // Packets buffered (out of order)
+    uint64_t packets_flushed;      // Packets flushed from buffer
+    uint64_t packets_dropped;      // Packets dropped (mismatch)
+    uint32_t max_buffer_size;      // Maximum buffer size observed
+
+    FlowReorderStats() : packets_received(0), packets_direct_sent(0),
+                        packets_buffered(0), packets_flushed(0),
+                        packets_dropped(0), max_buffer_size(0) {}
+};
+
+// Flow reorder buffer for destination ToR (ECMP counter reordering)
+struct FlowReorderBuffer {
+    uint16_t expected_counter;              // Next expected counter value
+    std::queue<Ptr<Packet>> queues[3];      // 3 FIFO queues (index = counter % 3) - unlimited size
+    FlowReorderStats stats;                 // Per-flow statistics
+
+    FlowReorderBuffer() : expected_counter(0) {}
+};
+
 // Switch type enumeration
 enum SwitchType {
     SWITCH_TYPE_UNKNOWN = 0,
@@ -70,6 +103,16 @@ class SwitchNode : public Node {
     void CheckAndSendPfc(uint32_t inDev, uint32_t qIndex);
     void CheckAndSendResume(uint32_t inDev, uint32_t qIndex);
 
+    /*----- ECMP Counter Reorder Buffer (for destination ToR) -----*/
+    std::map<FlowKey, FlowReorderBuffer> m_flowReorderBuffers;  // Per-flow reorder buffers
+    std::map<FlowKey, FlowReorderStats> m_flowReorderStats;     // Per-flow statistics
+    bool IsHostPort(uint32_t port);  // Check if port connects to host
+    bool ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t outPort);
+    void FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uint32_t outPort);
+
+    // Reorder statistics
+    ReorderStats m_reorderStats;     // Statistics for reorder buffer
+
     /* Sending packet to Egress port */
     void DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, uint32_t qIndex);
 
@@ -80,6 +123,9 @@ class SwitchNode : public Node {
     // Flow ECMP with input port (includes in_port in hash)
     uint32_t DoLbFlowECMPWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
                                     const std::vector<int> &nexthops, uint32_t inPort);
+    // Flow ECMP with ecmp_counter (includes ecmp_counter in hash)
+    uint32_t DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHeader &ch,
+                                     const std::vector<int> &nexthops);
     // Compare two paths (with and without inPort), select the better one
     uint32_t DoLbFlowCompareWithInPort(Ptr<const Packet> p, const CustomHeader &ch,
                                        const std::vector<int> &nexthops, uint32_t inPort);
@@ -151,6 +197,10 @@ class SwitchNode : public Node {
     static uint64_t m_totalProbeSent;           // Total probes sent
     static uint64_t m_totalProbeReceived;       // Total probes received
 
+    // Reorder output file (for mode 16, tag=1 per-flow statistics)
+    static FILE* m_reorderOutputFile;
+    static std::string m_reorderOutputFilename;
+
     // Probe generation - event driven (PFC change or queue occupancy > 60%)
     static const uint64_t QUEUE_OCCUPANCY_THRESHOLD = 60;  // 60% threshold for sending probe
     static const uint64_t PROBE_RATE_LIMIT_NS = 10000;     // 10us minimum between probes
@@ -188,6 +238,15 @@ private:
 
     /*----- PFC Port Tracking -----*/
     uint32_t GetPfcPortCount() const { return m_pfc_port_count; }
+
+    /*----- Reorder Buffer Statistics -----*/
+    void GetReorderStats(ReorderStats &stats);
+    // Get per-flow reorder statistics (key: sip,sport,dip,dport,proto, value: stats)
+    const std::map<FlowKey, FlowReorderStats>& GetFlowReorderStats() const { return m_flowReorderStats; }
+    // Output and clear reorder stats for a specific flow (mode 16, tag=1 only)
+    void OutputAndClearFlowReorder(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport);
+    // Open reorder output file
+    static void OpenReorderOutputFile(const std::string& path);
 };
 
 } /* namespace ns3 */

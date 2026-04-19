@@ -1,9 +1,11 @@
 #include "switch-node.h"
 
 #include "assert.h"
+#include <queue>
 #include "ns3/boolean.h"
 #include "ns3/channel.h"
 #include "ns3/conweave-routing.h"
+#include "ns3/point-to-point-channel.h"
 #include "ns3/double.h"
 #include "ns3/flow-id-tag.h"
 #include "ns3/int-header.h"
@@ -43,6 +45,14 @@ SwitchNode::SwitchNode() {
     m_isToR = false;
     m_drill_candidate = 2;
     m_pfc_port_count = 0;  // Initialize PFC counter
+
+    // Initialize reorder statistics
+    m_reorderStats.total_buffered = 0;
+    m_reorderStats.total_flushed = 0;
+    m_reorderStats.total_dropped = 0;
+    m_reorderStats.total_mismatch_drops = 0;
+    m_reorderStats.max_q_size = 0;
+    m_reorderStats.active_flows = 0;
     m_mmu = CreateObject<SwitchMmu>();
     // Conga's Callback for switch functions
     m_mmu->m_congaRouting.SetSwitchSendCallback(MakeCallback(&SwitchNode::DoSwitchSend, this));
@@ -65,6 +75,8 @@ uint64_t SwitchNode::m_pfcTriggeredProbeCount = 0;
 uint64_t SwitchNode::m_queueTriggeredProbeCount = 0;
 uint64_t SwitchNode::m_totalProbeSent = 0;
 uint64_t SwitchNode::m_totalProbeReceived = 0;
+FILE* SwitchNode::m_reorderOutputFile = nullptr;
+std::string SwitchNode::m_reorderOutputFilename = "";
 
 /**
  * @brief Load Balancing
@@ -97,6 +109,47 @@ uint32_t SwitchNode::DoLbFlowECMP(Ptr<const Packet> p, const CustomHeader &ch,
     std::cout << "[ECMP] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
               << "->" << Settings::hostIp2IdMap[ch.dip]
               << " tag=" << (uint32_t)ch.udp.tag
+              << " hash=" << hashVal
+              << " path=" << idx << "/" << nexthops.size()
+              << " out=" << nexthops[idx]
+              << std::endl;
+#endif
+    return nexthops[idx];
+}
+
+/*-----------------FlowECMP with Counter-----------------*/
+uint32_t SwitchNode::DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHeader &ch,
+                                              const std::vector<int> &nexthops) {
+    // pick one next hop based on hash (including ecmp_counter)
+    union {
+        uint8_t u8[4 + 4 + 2 + 2 + 2];  // sip + dip + sport + dport + ecmp_counter
+        uint32_t u32[3];
+        uint16_t u16[7];
+    } buf;
+    buf.u32[0] = ch.sip;
+    buf.u32[1] = ch.dip;
+    if (ch.l3Prot == 0x6)
+        buf.u32[2] = ch.tcp.sport | ((uint32_t)ch.tcp.dport << 16);
+    else if (ch.l3Prot == 0x11)  // XXX RDMA traffic on UDP
+        buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+    else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD)  // ACK or NACK
+        buf.u32[2] = ch.ack.sport | ((uint32_t)ch.ack.dport << 16);
+    else {
+        std::cout << "[ERROR] Sw(" << m_id << ")," << PARSE_FIVE_TUPLE(ch)
+                  << "Cannot support other protoocls than TCP/UDP (l3Prot:" << ch.l3Prot << ")"
+                  << std::endl;
+        assert(false && "Cannot support other protoocls than TCP/UDP");
+    }
+    buf.u16[6] = ch.udp.ecmp_counter % 3;  // Use ecmp_counter % 3 to group packets into 3 paths (14 bytes total)
+
+    uint32_t hashVal = EcmpHash(buf.u8, 14, m_ecmpSeed);
+    uint32_t idx = hashVal % nexthops.size();
+#if (DEBUG_FLOW_TRACKING == true)
+    std::cout << "[ECMP_CTR] Sw(" << m_id << ") " << Settings::hostIp2IdMap[ch.sip]
+              << "->" << Settings::hostIp2IdMap[ch.dip]
+              << " tag=" << (uint32_t)ch.udp.tag
+              << " ecmp_ctr=" << ch.udp.ecmp_counter
+              << " ctr%3=" << (ch.udp.ecmp_counter % 3)
               << " hash=" << hashVal
               << " path=" << idx << "/" << nexthops.size()
               << " out=" << nexthops[idx]
@@ -473,6 +526,191 @@ void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex) {
 }
 
 /********************************************
+ *         ECMP COUNTER REORDER BUFFER     *
+ *******************************************/
+
+// Check if the given port connects to a host (server)
+bool SwitchNode::IsHostPort(uint32_t port) {
+    if (!m_isToR) return false;  // Only ToR switches have host ports
+    // Check if the device at this port exists and points to a host
+    if (port >= m_devices.size()) return false;
+    Ptr<NetDevice> device = m_devices[port];
+    if (!device) return false;
+
+    // Get the channel and check the connected node
+    Ptr<Channel> channel = device->GetChannel();
+    if (!channel) return false;
+
+    // PointToPointChannel has GetDevice(0) and GetDevice(1)
+    // Dynamic cast to check if it's PointToPointChannel
+    Ptr<PointToPointChannel> p2pChannel = DynamicCast<PointToPointChannel>(channel);
+    if (!p2pChannel) return false;
+
+    // Get the device at the other end
+    Ptr<NetDevice> remoteDev = p2pChannel->GetDevice(0);
+    if (remoteDev == device) {
+        remoteDev = p2pChannel->GetDevice(1);
+    }
+    if (!remoteDev) return false;
+
+    // Get the node and check if it's a host (NodeType == 0)
+    Ptr<Node> remoteNode = remoteDev->GetNode();
+    if (!remoteNode) return false;
+
+    return remoteNode->GetNodeType() == 0;  // 0 = host, 1 = switch
+}
+
+// Process packet through reorder buffer, returns true if packet was consumed (buffered/sent)
+bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t outPort) {
+    // Only process UDP packets with tag=1 in mode 16 (mixhash)
+    if (Settings::lb_mode != 16) return false;  // Only mode 16 uses reorder buffer
+    if (ch.l3Prot != 0x11) return false;         // Not UDP, skip processing
+    if (ch.udp.tag != 1) return false;           // Only tag=1 uses reorder buffer
+
+    // Create flow key
+    FlowKey flowKey;
+    flowKey.sip = ch.sip;
+    flowKey.dip = ch.dip;
+    flowKey.sport = ch.udp.sport;
+    flowKey.dport = ch.udp.dport;
+    flowKey.proto = ch.l3Prot;
+
+    // Get or create reorder buffer and stats for this flow
+    FlowReorderBuffer &buf = m_flowReorderBuffers[flowKey];
+    FlowReorderStats &stats = m_flowReorderStats[flowKey];
+    uint16_t pkt_counter = ch.udp.ecmp_counter;
+
+    stats.packets_received++;
+
+    // Debug: Print first 10 packets per flow to understand pattern
+    if (stats.packets_received <= 10) {
+        std::cout << "[REORDER_DEBUG] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
+                  << "ns Flow=" << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
+                  << " pkt#" << stats.packets_received << " counter=" << pkt_counter
+                  << " expected=" << buf.expected_counter << std::endl;
+    }
+
+    // Check if packet matches expected counter
+    if (pkt_counter == buf.expected_counter) {
+        // Send packet directly to NIC
+        uint32_t qIndex = ch.udp.pg;
+        DoSwitchSend(p, ch, outPort, qIndex);
+        buf.expected_counter++;
+        stats.packets_direct_sent++;
+
+        // Flush consecutive packets from queues
+        FlushReorderQueue(flowKey, buf, outPort);
+        return true;  // Packet consumed
+    } else {
+        // Packet doesn't match expected counter
+        // If counter < expected, it's a very late packet (possibly retransmission), send directly
+        if (pkt_counter < buf.expected_counter) {
+            std::cout << "[REORDER_LATE_PKT] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
+                      << "ns Flow=" << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
+                      << " counter=" << pkt_counter << " expected=" << buf.expected_counter
+                      << " - sending late packet directly to NIC"
+                      << std::endl;
+
+            uint32_t qIndex = ch.udp.pg;
+            DoSwitchSend(p, ch, outPort, qIndex);
+            stats.packets_direct_sent++;  // Count as direct send, not buffered
+            return true;  // Packet consumed (sent directly)
+        }
+
+        // Buffer the packet in appropriate queue (counter % 3) - UNLIMITED queue size
+        uint32_t queue_idx = pkt_counter % 3;
+        buf.queues[queue_idx].push(p->Copy());  // Store a copy to avoid modification issues
+        m_reorderStats.total_buffered++;
+        stats.packets_buffered++;
+
+        // Debug: Print buffering info for first few buffers
+        if (stats.packets_buffered <= 5) {
+            std::cout << "[REORDER_BUFFER] Sw=" << GetId() << " Flow="
+                      << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
+                      << " counter=" << pkt_counter << " expected=" << buf.expected_counter
+                      << " queue=" << queue_idx << " qsize=" << buf.queues[queue_idx].size()
+                      << " buffered=" << stats.packets_buffered << std::endl;
+        }
+
+        // Update max queue size
+        uint32_t current_q_size = buf.queues[queue_idx].size();
+        if (current_q_size > m_reorderStats.max_q_size) {
+            m_reorderStats.max_q_size = current_q_size;
+        }
+        if (current_q_size > stats.max_buffer_size) {
+            stats.max_buffer_size = current_q_size;
+        }
+        return true;  // Packet consumed (buffered)
+    }
+}
+
+// Flush consecutive packets from reorder queues
+void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uint32_t outPort) {
+    uint32_t flushed_count = 0;
+    FlowReorderStats &stats = m_flowReorderStats[flowKey];
+
+    while (true) {
+        uint32_t queue_idx = buf.expected_counter % 3;
+
+        // Check if corresponding queue has packets
+        if (buf.queues[queue_idx].empty()) {
+            break;
+        }
+
+        // Peek at the head packet to check its counter
+        Ptr<Packet> headPkt = buf.queues[queue_idx].front();
+        CustomHeader headCh(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+        headPkt->PeekHeader(headCh);
+        uint16_t head_counter = headCh.udp.ecmp_counter;
+
+        // Check if head packet matches expected counter
+        if (head_counter == buf.expected_counter) {
+            // Dequeue and send
+            buf.queues[queue_idx].pop();
+            uint32_t qIndex = headCh.udp.pg;
+            DoSwitchSend(headPkt, headCh, outPort, qIndex);
+            buf.expected_counter++;
+            flushed_count++;
+            stats.packets_flushed++;
+        } else {
+            // Head packet doesn't match expected counter
+            // Drop all packets in all three queues to recover from mismatch
+            // But keep the buffer and expected_counter state for new packets
+
+            uint32_t total_dropped = 0;
+            for (int i = 0; i < 3; i++) {
+                total_dropped += buf.queues[i].size();
+                while (!buf.queues[i].empty()) {
+                    buf.queues[i].pop();
+                }
+            }
+
+            std::cout << "[REORDER_MISMATCH] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
+                      << "ns Flow=" << Settings::hostIp2IdMap[flowKey.sip] << "->" << Settings::hostIp2IdMap[flowKey.dip]
+                      << " expected=" << buf.expected_counter << " head_ctr=" << head_counter
+                      << " dropping " << total_dropped << " packets from queues (buffer kept)"
+                      << std::endl;
+
+            m_reorderStats.total_dropped += total_dropped;
+            m_reorderStats.total_mismatch_drops++;
+            stats.packets_dropped += total_dropped;
+
+            // Note: We DON'T erase the buffer or reset expected_counter
+            // New packets will arrive and expected_counter remains valid
+            break;  // Stop flushing after clearing queues
+        }
+    }
+
+    // Track flushed packets
+    m_reorderStats.total_flushed += flushed_count;
+
+    // NOTE: DO NOT clear reorder buffer when queues are empty!
+    // Flows can pause transmission (rate limiting, congestion control, etc.)
+    // but they may resume later. Keep the expected_counter state.
+    // Only clear on mismatch or explicit flow completion signal.
+}
+
+/********************************************
  *              MAIN LOGICS                 *
  *******************************************/
 
@@ -531,6 +769,15 @@ void SwitchNode::SendToDevContinue(Ptr<Packet> p, CustomHeader &ch) {
     if (idx >= 0) {
         NS_ASSERT_MSG(m_devices[idx]->IsLinkUp(),
                       "The routing table look up should return link that is up");
+
+        // ECMP Counter Reorder Buffer: process at destination ToR before sending to host
+        if (m_isToR && IsHostPort(idx)) {
+            bool consumed = ProcessReorderBuffer(p, ch, idx);
+            if (consumed) {
+                return;  // Packet was sent or buffered by reorder logic
+            }
+            // If not consumed, fall through to normal send
+        }
 
         // determine the qIndex
         uint32_t qIndex;
@@ -617,16 +864,17 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
 #if (DEBUG_TAG_ROUTING == true)
             std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+InPort (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
-            return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
+	    // return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
+	    return DoLbFlowECMPWithCounter(p, ch, nexthops);
         } else if (ch.udp.tag == 2) {
             Settings::tag2_compare_count++;
 #if (DEBUG_TAG_ROUTING == true)
             std::cout << "[MixHash] tag=" << ch.udp.tag << " using CompareWithInPort (total=" << Settings::tag2_compare_count << ")" << std::endl;
 #endif
-            return DoLbFlowCompareWithInPort(p, ch, nexthops, m_currentInPort);
+            return DoLbDrill(p, ch, nexthops);
         }
         // Default (tag == 0 or other): use ECMP with inPort
-        return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
+	return DoLbFlowECMP(p, ch, nexthops);
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing
@@ -903,6 +1151,62 @@ void SwitchNode::ClearTable() { m_rtTable.clear(); }
 uint64_t SwitchNode::GetTxBytesOutDev(uint32_t outdev) {
     assert(outdev < pCnt);
     return m_txBytes[outdev];
+}
+
+void SwitchNode::GetReorderStats(ReorderStats &stats) {
+    // Update active flows count
+    m_reorderStats.active_flows = m_flowReorderBuffers.size();
+    stats = m_reorderStats;
+}
+
+// Output and clear reorder stats for a specific flow (mode 16, tag=1 only)
+void SwitchNode::OutputAndClearFlowReorder(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
+    // Only process for mode 16 (mixhash)
+    if (Settings::lb_mode != 16) return;
+
+    // Find flow in reorder stats
+    for (auto it = m_flowReorderStats.begin(); it != m_flowReorderStats.end(); ++it) {
+        const FlowKey& key = it->first;
+        if (key.sip == sip && key.dip == dip && key.sport == sport && key.dport == dport) {
+            const FlowReorderStats& stats = it->second;
+
+            // Output stats if flow had reordering activity
+            if (stats.packets_buffered > 0 || stats.packets_dropped > 0) {
+                if (m_reorderOutputFile) {
+                    fprintf(m_reorderOutputFile, "%u %u %u %u %u %lu %lu %lu %lu %lu %u\n",
+                            Settings::hostIp2IdMap[key.sip],
+                            Settings::hostIp2IdMap[key.dip],
+                            key.sport, key.dport, (int)key.proto,
+                            stats.packets_received,
+                            stats.packets_direct_sent,
+                            stats.packets_buffered,
+                            stats.packets_flushed,
+                            stats.packets_dropped,
+                            stats.max_buffer_size);
+                    fflush(m_reorderOutputFile);
+                }
+            }
+
+            // Clear from both maps
+            m_flowReorderStats.erase(it);
+            m_flowReorderBuffers.erase(key);
+            return;
+        }
+    }
+}
+
+// Open reorder output file
+void SwitchNode::OpenReorderOutputFile(const std::string& path) {
+    if (m_reorderOutputFile) {
+        fclose(m_reorderOutputFile);
+    }
+    m_reorderOutputFilename = path;
+    m_reorderOutputFile = fopen(path.c_str(), "w");
+    if (m_reorderOutputFile) {
+        // Write header
+        fprintf(m_reorderOutputFile, "# sip dip sport dport proto received direct_sent buffered flushed dropped max_buf_size\n");
+        fflush(m_reorderOutputFile);
+    }
 }
 
 /********************************************

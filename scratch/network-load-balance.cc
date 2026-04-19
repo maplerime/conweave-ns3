@@ -19,6 +19,7 @@
  */
 
 #include <ns3/assert.h>
+#include <ns3/node-list.h>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-client.h>
 #include <ns3/rdma-driver.h>
@@ -559,6 +560,18 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
                   << standalone_fct);
     Settings::cnt_finished_flows++;
     fflush(fout);
+
+    // Clean up reorder buffer for this flow at all switches (mode 16 only)
+    if (Settings::lb_mode == 16) {
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            if (n.Get(i)->GetNodeType() == 1) {  // is switch
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
+                if (sw) {
+                    sw->OutputAndClearFlowReorder(q->sip.Get(), q->dip.Get(), q->sport, q->dport);
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1397,6 +1410,19 @@ int main(int argc, char *argv[]) {
 
     fct_output = fopen(fct_output_file.c_str(), "w");
     flow_input_stream = fopen(flow_input_file.c_str(), "w");
+
+    // Open reorder output file for mode 16 (mixhash)
+    if (Settings::lb_mode == 16) {
+        std::string reorder_output_file = fct_output_file;
+        size_t pos = reorder_output_file.find("_out_fct.txt");
+        if (pos != std::string::npos) {
+            reorder_output_file = reorder_output_file.substr(0, pos) + "_out_reorder.txt";
+        } else {
+            reorder_output_file = "reorder_stats.txt";
+        }
+        SwitchNode::OpenReorderOutputFile(reorder_output_file);
+    }
+
     if (cc_mode == 1) {
         cnp_output = fopen(cnp_output_file.c_str(), "w");
     }
@@ -1595,6 +1621,7 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Configuring switches" << std::endl;
     /* config ToR Switch */
+    std::cout << "  Setting up ToR switches..." << std::endl;
     for (auto &pair : link_pairs) {
         Ptr<Node> probably_host = n.Get(pair.first);
         Ptr<Node> probably_switch = n.Get(pair.second);
@@ -1611,6 +1638,7 @@ int main(int argc, char *argv[]) {
             };
         }
     }
+    std::cout << "  ToR switches configured." << std::endl;
 
     // Inflex mode (lb_mode == 12): configure switch types and start probe generation
     if (lb_mode == 12) {
@@ -1924,8 +1952,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // populate routing tables (although we use our custom impl in switch_node.cc)
-    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+    // Skip global routing table population - we use custom routing in switch_node.cc
+    // NS-3's GlobalRouting causes stack overflow on large topologies (1856+ nodes)
+    std::cout << "Skipping global routing (using custom routing in switches)..." << std::endl;
+    // Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+    std::cout << "  Custom routing configured." << std::endl;
 
     // maintain port number for each host
     for (uint32_t i = 0; i < node_num; i++) {
@@ -2021,6 +2052,83 @@ int main(int argc, char *argv[]) {
         std::cout << "Queue>60% triggered probes: " << SwitchNode::m_queueTriggeredProbeCount << std::endl;
         std::cout << "Total probes received: " << SwitchNode::m_totalProbeReceived << std::endl;
         std::cout << "========================" << std::endl;
+    }
+
+    // Output Reorder Buffer statistics for mode 16 (MixHash with tag=1)
+    if (Settings::lb_mode == 16) {
+        std::cout << "=== REORDER BUFFER STATISTICS ===" << std::endl;
+        // Aggregate statistics across all ToR switches
+        ns3::ReorderStats totalStats = {0, 0, 0, 0, 0, 0};
+        uint32_t tor_count = 0;
+        for (uint32_t i = 0; i < NodeList::GetNNodes(); i++) {
+            Ptr<Node> node = NodeList::GetNode(i);
+            if (!node) continue;
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+            if (sw && sw->GetId() > 1) {  // Skip switch 0 and 1 if they're not ToRs
+                ns3::ReorderStats stats;
+                sw->GetReorderStats(stats);
+                if (stats.total_buffered > 0 || stats.total_flushed > 0 || stats.total_dropped > 0) {
+                    totalStats.total_buffered += stats.total_buffered;
+                    totalStats.total_flushed += stats.total_flushed;
+                    totalStats.total_dropped += stats.total_dropped;
+                    totalStats.total_mismatch_drops += stats.total_mismatch_drops;
+                    if (stats.max_q_size > totalStats.max_q_size) {
+                        totalStats.max_q_size = stats.max_q_size;
+                    }
+                    tor_count++;
+                }
+            }
+        }
+        std::cout << "Active ToR switches with reorder: " << tor_count << std::endl;
+        std::cout << "Total packets buffered: " << totalStats.total_buffered << std::endl;
+        std::cout << "Total packets flushed: " << totalStats.total_flushed << std::endl;
+        std::cout << "Total packets dropped: " << totalStats.total_dropped << std::endl;
+        std::cout << "  - Queue full drops: " << (totalStats.total_dropped - totalStats.total_mismatch_drops) << std::endl;
+        std::cout << "  - Counter mismatch drops: " << totalStats.total_mismatch_drops << std::endl;
+        std::cout << "Max queue size observed: " << totalStats.max_q_size << std::endl;
+        std::cout << "========================" << std::endl;
+
+        // Output per-flow reorder statistics to file
+        // Use same base name as FCT output file
+        std::string flowReorderFile = fct_output_file;
+        // Replace _out_fct.txt with _out_reorder.txt
+        size_t pos = flowReorderFile.find("_out_fct.txt");
+        if (pos != std::string::npos) {
+            flowReorderFile = flowReorderFile.substr(0, pos) + "_out_reorder.txt";
+        } else {
+            flowReorderFile = "reorder_stats.txt";
+        }
+        std::ofstream flowReorderOut(flowReorderFile);
+        if (flowReorderOut.is_open()) {
+            // Header: sip,dip,sport,dport,proto,received,direct_sent,buffered,flushed,dropped,max_buf_size
+            flowReorderOut << "# sip dip sport dport proto received direct_sent buffered flushed dropped max_buf_size" << std::endl;
+            for (uint32_t i = 0; i < NodeList::GetNNodes(); i++) {
+                Ptr<Node> node = NodeList::GetNode(i);
+                if (!node) continue;
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                if (sw) {
+                    const std::map<FlowKey, FlowReorderStats>& flowStats = sw->GetFlowReorderStats();
+                    for (const auto& entry : flowStats) {
+                        const FlowKey& key = entry.first;
+                        const FlowReorderStats& stats = entry.second;
+                        // Only output flows that had some reordering activity
+                        if (stats.packets_buffered > 0 || stats.packets_dropped > 0) {
+                            flowReorderOut << Settings::hostIp2IdMap[key.sip] << " "
+                                          << Settings::hostIp2IdMap[key.dip] << " "
+                                          << key.sport << " " << key.dport << " " << (int)key.proto << " "
+                                          << stats.packets_received << " "
+                                          << stats.packets_direct_sent << " "
+                                          << stats.packets_buffered << " "
+                                          << stats.packets_flushed << " "
+                                          << stats.packets_dropped << " "
+                                          << stats.max_buffer_size << std::endl;
+                        }
+                    }
+                }
+            }
+            flowReorderOut.close();
+            std::cout << "Per-flow reorder stats written to: " << flowReorderFile << std::endl;
+        }
     }
 
     // Output tag-based routing statistics for Hybrid, Inflex, and Spray modes

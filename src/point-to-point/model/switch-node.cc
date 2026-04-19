@@ -140,7 +140,7 @@ uint32_t SwitchNode::DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHe
                   << std::endl;
         assert(false && "Cannot support other protoocls than TCP/UDP");
     }
-    buf.u16[6] = ch.udp.ecmp_counter % 3;  // Use ecmp_counter % 3 to group packets into 3 paths (14 bytes total)
+    buf.u16[6] = ch.udp.ecmp_counter % Settings::reorder_queue_num;  // Use ecmp_counter % num_queues
 
     uint32_t hashVal = EcmpHash(buf.u8, 14, m_ecmpSeed);
     uint32_t idx = hashVal % nexthops.size();
@@ -149,7 +149,7 @@ uint32_t SwitchNode::DoLbFlowECMPWithCounter(Ptr<const Packet> p, const CustomHe
               << "->" << Settings::hostIp2IdMap[ch.dip]
               << " tag=" << (uint32_t)ch.udp.tag
               << " ecmp_ctr=" << ch.udp.ecmp_counter
-              << " ctr%3=" << (ch.udp.ecmp_counter % 3)
+              << " ctr%" << Settings::reorder_queue_num << "=" << (ch.udp.ecmp_counter % Settings::reorder_queue_num)
               << " hash=" << hashVal
               << " path=" << idx << "/" << nexthops.size()
               << " out=" << nexthops[idx]
@@ -580,6 +580,11 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
     FlowReorderStats &stats = m_flowReorderStats[flowKey];
     uint16_t pkt_counter = ch.udp.ecmp_counter;
 
+    // Initialize queues vector if this is a new buffer
+    if (buf.queues.size() != Settings::reorder_queue_num) {
+        buf.queues.resize(Settings::reorder_queue_num);
+    }
+
     stats.packets_received++;
 
     // Debug: Print first 10 packets per flow to understand pattern
@@ -617,8 +622,8 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
             return true;  // Packet consumed (sent directly)
         }
 
-        // Buffer the packet in appropriate queue (counter % 3) - UNLIMITED queue size
-        uint32_t queue_idx = pkt_counter % 3;
+        // Buffer the packet in appropriate queue (counter % num_queues) - UNLIMITED queue size
+        uint32_t queue_idx = pkt_counter % Settings::reorder_queue_num;
         buf.queues[queue_idx].push(p->Copy());  // Store a copy to avoid modification issues
         m_reorderStats.total_buffered++;
         stats.packets_buffered++;
@@ -650,7 +655,7 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
     FlowReorderStats &stats = m_flowReorderStats[flowKey];
 
     while (true) {
-        uint32_t queue_idx = buf.expected_counter % 3;
+        uint32_t queue_idx = buf.expected_counter % Settings::reorder_queue_num;
 
         // Check if corresponding queue has packets
         if (buf.queues[queue_idx].empty()) {
@@ -674,11 +679,11 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
             stats.packets_flushed++;
         } else {
             // Head packet doesn't match expected counter
-            // Drop all packets in all three queues to recover from mismatch
+            // Drop all packets in all queues to recover from mismatch
             // But keep the buffer and expected_counter state for new packets
 
             uint32_t total_dropped = 0;
-            for (int i = 0; i < 3; i++) {
+            for (uint32_t i = 0; i < Settings::reorder_queue_num; i++) {
                 total_dropped += buf.queues[i].size();
                 while (!buf.queues[i].empty()) {
                     buf.queues[i].pop();
@@ -852,29 +857,30 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         return DoLbDrill(p, ch, nexthops);
     }
 
-    // MixHash mode (lb_mode=16): mix of ECMP with inPort and DRILL
+    // MixHash mode (lb_mode=16): mix of ECMP with counter and DRILL
     if (Settings::lb_mode == 16) {
-        // Control packets use ECMP without inPort (same as Hybrid)
+        // Control packets use ECMP without counter
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // tag == 1 -> FlowECMP with inPort, tag == 2 -> DRILL
+        // tag == 1 -> FlowECMP with counter
         if (ch.udp.tag == 1) {
             Settings::tag1_ecmp_count++;
 #if (DEBUG_TAG_ROUTING == true)
-            std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+InPort (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+            std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+Counter (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
-	    // return DoLbFlowECMPWithInPort(p, ch, nexthops, m_currentInPort);
-	    return DoLbFlowECMPWithCounter(p, ch, nexthops);
-        } else if (ch.udp.tag == 2) {
-            Settings::tag2_compare_count++;
+            return DoLbFlowECMPWithCounter(p, ch, nexthops);
+        }
+        // tag == 2 -> DRILL
+        if (ch.udp.tag == 2) {
+            Settings::tag2_drill_count++;
 #if (DEBUG_TAG_ROUTING == true)
-            std::cout << "[MixHash] tag=" << ch.udp.tag << " using CompareWithInPort (total=" << Settings::tag2_compare_count << ")" << std::endl;
+            std::cout << "[MixHash] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
 #endif
             return DoLbDrill(p, ch, nexthops);
         }
-        // Default (tag == 0 or other): use ECMP with inPort
-	return DoLbFlowECMP(p, ch, nexthops);
+        // Default (tag == 0 or other): use ECMP
+        return DoLbFlowECMP(p, ch, nexthops);
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing

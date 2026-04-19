@@ -24,6 +24,8 @@ class SimulationResult:
         self.path = path
         if lb_mode == 0:
             self.mode_name = "ECMP"
+        elif lb_mode == 2:
+            self.mode_name = f"Drill({fecmp_bg})" if fecmp_bg > 0 else "Drill(0)"
         elif lb_mode == 9:
             self.mode_name = "Conweave"  # No fecmp_bg suffix
         elif lb_mode == 10:
@@ -34,6 +36,8 @@ class SimulationResult:
             self.mode_name = f"Hybrid-AS({fecmp_bg})" if fecmp_bg > 0 else "Hybrid-AS(0)"
         elif lb_mode == 14:
             self.mode_name = f"Hybrid-SS({fecmp_bg})" if fecmp_bg > 0 else "Hybrid-SS(0)"
+        elif lb_mode == 16:
+            self.mode_name = f"MixHash({fecmp_bg})" if fecmp_bg > 0 else "MixHash(0)"
         else:
             self.mode_name = f"Mode{lb_mode}({fecmp_bg})"
 
@@ -396,26 +400,32 @@ def format_delta(delta_percent: float, show_sign: bool = True) -> str:
 
 def print_fct_table(results: Dict[str, SimulationResult]):
     """Print FCT performance comparison table."""
-    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
+    # Sort order: Hybrid, MixHash, Drill, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (0, bg)
-        elif mode == 'Hybrid-AS':
+        elif mode == 'MixHash':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (1, bg)
-        elif mode == 'Hybrid-SS':
+        elif mode == 'Drill':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (2, bg)
-        elif mode == 'Inflex':
+        elif mode == 'Hybrid-AS':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (3, bg)
+        elif mode == 'Hybrid-SS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (4, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (5, bg)
         elif mode == 'ECMP':
-            return (4, 0)
+            return (6, 0)
         elif mode == 'Conweave':
-            return (5, 0)  # No fecmp_bg for Conweave
-        return (6, 0)
+            return (7, 0)  # No fecmp_bg for Conweave
+        return (8, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -525,26 +535,32 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
 
 def print_qlen_table(results: Dict[str, SimulationResult]):
     """Print queue length comparison table."""
-    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
+    # Sort order: Hybrid, MixHash, Drill, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
         if mode == 'Hybrid':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (0, bg)
-        elif mode == 'Hybrid-AS':
+        elif mode == 'MixHash':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (1, bg)
-        elif mode == 'Hybrid-SS':
+        elif mode == 'Drill':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (2, bg)
-        elif mode == 'Inflex':
+        elif mode == 'Hybrid-AS':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (3, bg)
+        elif mode == 'Hybrid-SS':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (4, bg)
+        elif mode == 'Inflex':
+            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
+            return (5, bg)
         elif mode == 'ECMP':
-            return (4, 0)
+            return (6, 0)
         elif mode == 'Conweave':
-            return (5, 0)  # No fecmp_bg for Conweave
-        return (6, 0)
+            return (7, 0)  # No fecmp_bg for Conweave
+        return (8, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
@@ -630,7 +646,8 @@ def print_summary(results: Dict[str, SimulationResult]):
 
     # Timeout statistics by mode
     print("\n--- 超时重传统计 ---")
-    modes_to_compare = [("Hybrid", "Hybrid"), ("Hybrid-AS", "Hybrid-AS"), ("Hybrid-SS", "Hybrid-SS"),
+    modes_to_compare = [("Hybrid", "Hybrid"), ("MixHash", "MixHash"), ("Drill", "Drill"),
+                        ("Hybrid-AS", "Hybrid-AS"), ("Hybrid-SS", "Hybrid-SS"),
                         ("Conweave", "Conweave"), ("Inflex", "Inflex")]
     for mode_key, mode_name in modes_to_compare:
         total_to = sum(r.total_timeout for k, r in results.items() if mode_key in k)
@@ -638,12 +655,20 @@ def print_summary(results: Dict[str, SimulationResult]):
             print(f"• {mode_name} 总超时: {total_to:,}")
 
     # Compare timeout ratios
-    total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_to = sum(r.total_timeout for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k and "MixHash" not in k)
+    total_mixhash_to = sum(r.total_timeout for k, r in results.items() if "MixHash" in k)
+    total_drill_to = sum(r.total_timeout for k, r in results.items() if "Drill" in k)
     total_hybrid_as_to = sum(r.total_timeout for k, r in results.items() if "Hybrid-AS" in k)
     total_hybrid_ss_to = sum(r.total_timeout for k, r in results.items() if "Hybrid-SS" in k)
     total_conweave_to = sum(r.total_timeout for k, r in results.items() if "Conweave" in k)
     total_inflex_to = sum(r.total_timeout for k, r in results.items() if "Inflex" in k)
 
+    if total_hybrid_to > 0 and total_mixhash_to > 0:
+        to_ratio = total_mixhash_to / total_hybrid_to
+        print(f"• MixHash vs Hybrid 超时比例: {to_ratio:.2f}x")
+    if total_hybrid_to > 0 and total_drill_to > 0:
+        to_ratio = total_drill_to / total_hybrid_to
+        print(f"• Drill vs Hybrid 超时比例: {to_ratio:.2f}x")
     if total_hybrid_to > 0 and total_conweave_to > 0:
         to_ratio = total_conweave_to / total_hybrid_to
         print(f"• Conweave vs Hybrid 超时比例: {to_ratio:.2f}x")
@@ -668,8 +693,12 @@ def print_summary(results: Dict[str, SimulationResult]):
         if total_pfc_small > 0 or total_pfc_large > 0:
             print(f"• {mode_name} 小流PFC: {total_pfc_small:,}, 大流PFC(全部): {total_pfc_large:,}")
 
-    total_hybrid_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
-    total_hybrid_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k)
+    total_hybrid_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k and "MixHash" not in k)
+    total_hybrid_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid" in k and "Hybrid-AS" not in k and "Hybrid-SS" not in k and "MixHash" not in k)
+    total_mixhash_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "MixHash" in k)
+    total_mixhash_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "MixHash" in k)
+    total_drill_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Drill" in k)
+    total_drill_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Drill" in k)
     total_hybrid_as_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid-AS" in k)
     total_hybrid_as_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Hybrid-AS" in k)
     total_hybrid_ss_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Hybrid-SS" in k)
@@ -679,12 +708,24 @@ def print_summary(results: Dict[str, SimulationResult]):
     total_inflex_pfc_small = sum(r.pfc_count_small for k, r in results.items() if "Inflex" in k)
     total_inflex_pfc_large = sum(r.pfc_count_large for k, r in results.items() if "Inflex" in k)
 
+    if total_hybrid_pfc_small > 0 and total_mixhash_pfc_small > 0:
+        pfc_ratio = total_mixhash_pfc_small / total_hybrid_pfc_small
+        print(f"• MixHash vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_small > 0 and total_drill_pfc_small > 0:
+        pfc_ratio = total_drill_pfc_small / total_hybrid_pfc_small
+        print(f"• Drill vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
     if total_hybrid_pfc_small > 0 and total_conweave_pfc_small > 0:
         pfc_ratio = total_conweave_pfc_small / total_hybrid_pfc_small
         print(f"• Conweave vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
     if total_hybrid_pfc_small > 0 and total_inflex_pfc_small > 0:
         pfc_ratio = total_inflex_pfc_small / total_hybrid_pfc_small
         print(f"• Inflex vs Hybrid 小流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_large > 0 and total_mixhash_pfc_large > 0:
+        pfc_ratio = total_mixhash_pfc_large / total_hybrid_pfc_large
+        print(f"• MixHash vs Hybrid 大流PFC比例: {pfc_ratio:.2f}x")
+    if total_hybrid_pfc_large > 0 and total_drill_pfc_large > 0:
+        pfc_ratio = total_drill_pfc_large / total_hybrid_pfc_large
+        print(f"• Drill vs Hybrid 大流PFC比例: {pfc_ratio:.2f}x")
     if total_hybrid_pfc_large > 0 and total_conweave_pfc_large > 0:
         pfc_ratio = total_conweave_pfc_large / total_hybrid_pfc_large
         print(f"• Conweave vs Hybrid 大流PFC比例: {pfc_ratio:.2f}x")

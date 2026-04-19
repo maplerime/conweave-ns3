@@ -153,6 +153,10 @@ class Settings {
     static uint64_t tag2_compare_count;       // tag=2 flows using CompareWithInPort
     static uint64_t tag2_adaptive_spray_count; // tag=2 flows using Adaptive Spray
     static uint64_t tag2_random_spray_count;   // tag=2 flows using Random Spray
+
+    /* Reorder buffer settings for mode 16 (MixHash) */
+    static uint32_t reorder_queue_num;        // Number of reorder queues (default 4)
+    static const uint32_t REORDER_MAX_QUEUE_SIZE = 8;  // Max size per reorder queue
 };
 
 }  // namespace ns3

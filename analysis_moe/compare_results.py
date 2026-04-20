@@ -423,16 +423,15 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
 def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
     """Print large flow FCT comparison table (8MB background flows)."""
-    # Sort order: Hybrid, MixHash, Drill, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
+    # Sort order: ECMP, Hybrid, MixHash, Hybrid-AS, Hybrid-SS, Inflex, Conweave, then others
     def sort_key(x):
         mode = x.split('(')[0]
-        if mode == 'Hybrid':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (0, bg)
-        elif mode == 'MixHash':
+        if mode == 'ECMP':
+            return (0, 0)
+        elif mode == 'Hybrid':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (1, bg)
-        elif mode == 'Drill':
+        elif mode == 'MixHash':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (2, bg)
         elif mode == 'Hybrid-AS':
@@ -444,27 +443,21 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
         elif mode == 'Inflex':
             bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
             return (5, bg)
-        elif mode == 'ECMP':
-            return (6, 0)
         elif mode == 'Conweave':
-            return (7, 0)
-        return (8, 0)
+            return (6, 0)
+        return (7, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
-    # Find baseline: use Hybrid(0) if available, otherwise first with large flows
-    baseline = None
-    for key in sorted_keys:
-        if results[key].large_total_flows > 0:
-            baseline = results[key]
-            break
+    # Find baseline: use ECMP as baseline for large flow FCT comparison
+    baseline = results.get("ECMP")
 
     baseline_avg = baseline.large_avg_fct if baseline else 0
     baseline_p50 = baseline.large_p50_fct if baseline else 0
     baseline_p99 = baseline.large_p99_fct if baseline else 0
 
     print("\n" + "="*150)
-    print("FCT 性能对比 - 大流 (8MB背景流)")
+    print("FCT 性能对比 - 大流 (8MB背景流) - 基准: ECMP")
     print("="*150)
     print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(全部)':>10} {'vs基线P99':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*150)

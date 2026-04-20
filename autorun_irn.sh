@@ -34,7 +34,7 @@ python3 run.py --lb conga --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NE
 sleep 0.1
 python3 run.py --lb conweave --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
-python3 run.py --lb necmp --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
+python3 run.py --lb mixhash --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} 2>&1 > /dev/null &
 sleep 0.1
 
 cecho "GREEN" "Runing all in parallel. Check the processors running on background!"

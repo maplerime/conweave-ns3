@@ -467,8 +467,6 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
 
         if r.large_total_flows == 0:
             continue  # Skip configurations with no large flows
-        if key.split('(')[0] == 'Drill':
-            continue  # Skip Drill modes in large flow table
 
         # Calculate percentage deltas relative to baseline (using P99 for comparison)
         avg_str = f"{r.large_avg_fct:.2f}"

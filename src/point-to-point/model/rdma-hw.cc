@@ -194,7 +194,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     qp->SetTag(tag);
     qp->SetTimeout(m_waitAckTimeout);
 
-    if (m_irn && tag != 1) {
+    if (m_irn) {
         qp->irn.m_enabled = m_irn;
         qp->irn.m_bdp = m_irn_bdp;
         qp->irn.m_rtoLow = m_irn_rtoLow;
@@ -337,7 +337,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
         seqh.SetDport(ch.udp.sport);
         seqh.SetIntHeader(ch.udp.ih);
 
-        if (m_irn && ch.udp.tag != 1) {
+        if (m_irn) {
             if (x == 2) {
                 seqh.SetIrnNack(ch.udp.seq);
                 seqh.SetIrnNackSize(payload_size);
@@ -529,11 +529,11 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
                                                qp->GetRto(m_mtu));
     }
 
-    if (qp->irn.m_enabled) {
+    if (m_irn) {
         if (ch.ack.irnNackSize != 0) {
             if (!qp->irn.m_recovery) {
                 qp->irn.m_recovery_seq = qp->snd_nxt;
-                // RecoverQueue(qp);  // Do not immediately retransmit on NACK
+                RecoverQueue(qp);
                 qp->irn.m_recovery = true;
             }
         } else {
@@ -545,12 +545,12 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     } else if (ch.l3Prot == 0xFD)  // NACK
         RecoverQueue(qp);
 
-    // handle cnp - DISABLED for DCQCN (mlx version)
-    // if (cnp) {
-    //     if (m_cc_mode == 1) {  // mlx version
-    //         cnp_received_mlx(qp);
-    //     }
-    // }
+    // handle cnp
+    if (cnp) {
+        if (m_cc_mode == 1) {  // mlx version
+            cnp_received_mlx(qp);
+        }
+    }
 
     if (m_cc_mode == 3) {
         HandleAckHp(qp, p, ch);
@@ -602,7 +602,7 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
 int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp, uint16_t tag) {
     uint32_t expected = q->ReceiverNextExpectedSeq;
     if (seq == expected || (seq < expected && seq + size >= expected)) {
-        if (m_irn && tag != 1) {
+        if (m_irn) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
             q->ReceiverNextExpectedSeq += size - (expected - seq);
             {
@@ -636,15 +636,8 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         }
     } else if (seq > expected) {
         // Generate NACK
-        if (m_irn && tag != 1) {
+        if (m_irn) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
-
-            // If the received packet is more than 64KB ahead of expected, send NACK immediately
-            if (seq - expected > 65536) {
-                q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
-                // cnp = true;  // Do not set CNP in IRN mode
-                return 2;  // generate NACK immediately
-            }
 
             // if seq is already nacked, check for nacktimer
             if (q->m_irn_sack_.blockExists(seq, size) && Simulator::Now() < q->m_nackTimer) {
@@ -654,7 +647,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             q->m_irn_sack_.sack(seq, size);  // set SACK
             NS_ASSERT(q->m_irn_sack_.discardUpTo(expected) ==
                       0);  // SACK blocks must be larger than expected
-            // cnp = true;  // Do not set CNP in IRN mode
+            cnp = true;    // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
             return 2;      // generate SACK
         }
         if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) {  // new NACK
@@ -663,7 +656,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             if (m_backto0) {
                 q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk * m_chunk;
             }
-            // cnp = true;  // Do not set CNP on NACK
+            cnp = true;  // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
             return 2;
         } else {
             // skip to send NACK
@@ -671,7 +664,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
         }
     } else {
         // Duplicate.
-        if (m_irn && tag != 1) {
+        if (m_irn) {
             // if (q->ReceiverNextExpectedSeq - 1 == q->m_milestone_rx) {
             // 	return 6; // This generates NACK, but actually functions as an ACK (indicates all
             // packet has been received)
@@ -879,8 +872,7 @@ void RdmaHw::HandleTimeout(Ptr<RdmaQueuePair> qp, Time rto) {
     Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
 
     // IRN: disable timeouts when PFC is enabled to prevent spurious retransmissions
-    // DISABLED: Allow timeout retransmission even when PFC is enabled
-    // if (qp->irn.m_enabled && dev->IsQbbEnabled()) return;
+    if (qp->irn.m_enabled && dev->IsQbbEnabled()) return;
 
     if (acc_timeout_count.find(qp->m_flow_id) == acc_timeout_count.end())
         acc_timeout_count[qp->m_flow_id] = 0;

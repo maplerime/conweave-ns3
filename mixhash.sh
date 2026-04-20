@@ -132,10 +132,6 @@ cecho "GREEN" "\n=========================================="
 cecho "GREEN" "Run Hybrid experiments"
 cecho "GREEN" "=========================================="
 
-# fecmp_bg = 0 (all drill)
-FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
-run_simulation "hybrid" "0" "$FLOW_FILE"
-
 # fecmp_bg = 0
 FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
 run_simulation "mixhash" "0" "$FLOW_FILE"

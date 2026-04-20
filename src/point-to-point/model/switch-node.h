@@ -199,7 +199,7 @@ class SwitchNode : public Node {
     static uint64_t m_totalProbeSent;           // Total probes sent
     static uint64_t m_totalProbeReceived;       // Total probes received
 
-    // Reorder output file (for mode 16, tag=1 per-flow statistics)
+    // Reorder output file (for mode 16, all flows per-flow statistics)
     static FILE* m_reorderOutputFile;
     static std::string m_reorderOutputFilename;
 
@@ -245,7 +245,7 @@ private:
     void GetReorderStats(ReorderStats &stats);
     // Get per-flow reorder statistics (key: sip,sport,dip,dport,proto, value: stats)
     const std::map<FlowKey, FlowReorderStats>& GetFlowReorderStats() const { return m_flowReorderStats; }
-    // Output and clear reorder stats for a specific flow (mode 16, tag=1 only)
+    // Output and clear reorder stats for a specific flow (mode 16, all flows)
     void OutputAndClearFlowReorder(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport);
     // Open reorder output file
     static void OpenReorderOutputFile(const std::string& path);

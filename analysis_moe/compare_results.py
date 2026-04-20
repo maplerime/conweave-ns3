@@ -69,12 +69,6 @@ class SimulationResult:
         self.avg_timeout = 0.0
         self.max_timeout = 0
 
-        # Queue metrics (in bytes)
-        self.avg_qlen = 0.0
-        self.p50_qlen = 0.0
-        self.p99_qlen = 0.0
-        self.max_qlen = 0.0
-
 
 def parse_config(config_path: str) -> Tuple[int, int]:
     """Parse config.txt to extract LB_MODE and FECMP_BG."""
@@ -273,30 +267,6 @@ def read_pfc_count_simple(pfc_path: str) -> int:
     return count
 
 
-def read_qlen_results(qlen_path: str) -> Tuple[float, float, float, float]:
-    """Read queue length file and return avg, p50, p99, max in bytes."""
-    qlen_values = []
-
-    with open(qlen_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split(',')
-            if len(parts) >= 4:
-                # Column 4 is queue length in bytes
-                qlen = float(parts[3])
-                qlen_values.append(qlen)
-
-    if not qlen_values:
-        return 0.0, 0.0, 0.0, 0.0
-
-    qlen_values = np.array(qlen_values)
-    avg = np.mean(qlen_values)
-    max_val = np.max(qlen_values)
-
-    p50, p99 = calculate_percentiles(qlen_values)
-
-    return avg, p50, p99, max_val
-
-
 def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
     """Scan mix/output directory for simulation results."""
     results = {}
@@ -325,7 +295,6 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
         dir_id = sim_dir.name
         fct_path = sim_dir / f"{dir_id}_out_fct.txt"
         pfc_path = sim_dir / f"{dir_id}_out_pfc.txt"
-        qlen_path = sim_dir / f"{dir_id}_out_qlen.txt"
 
         if not fct_path.exists():
             # Try alternative naming
@@ -336,11 +305,6 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
         if not pfc_path.exists():
             for f in sim_dir.glob("*_out_pfc.txt"):
                 pfc_path = f
-                break
-
-        if not qlen_path.exists():
-            for f in sim_dir.glob("*_out_qlen.txt"):
-                qlen_path = f
                 break
 
         # Create result object
@@ -371,12 +335,6 @@ def scan_output_directory(base_path: str) -> Dict[str, SimulationResult]:
                 result.pfc_count_large = result.pfc_count
         else:
             print(f"Warning: PFC file not found for {dir_id}")
-
-        # Read queue length data
-        if qlen_path.exists():
-            result.avg_qlen, result.p50_qlen, result.p99_qlen, result.max_qlen = read_qlen_results(str(qlen_path))
-        else:
-            print(f"Warning: Qlen file not found for {dir_id}")
 
         key = result.mode_name
         results[key] = result
@@ -429,14 +387,14 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
-    # Find baseline: always use Hybrid(0) as baseline
-    baseline = results.get("Hybrid(0)")
+    # Find baseline: use Drill(0) as baseline for small flow FCT comparison
+    baseline = results.get("Drill(0)")
     baseline_avg = baseline.avg_fct if baseline else 0
     baseline_p50 = baseline.p50_fct if baseline else 0
     baseline_p99 = baseline.p99_fct if baseline else 0
 
     print("\n" + "="*135)
-    print("FCT 性能对比 (Flow Completion Time) - 小流 (8KB专家流)")
+    print("FCT 性能对比 (Flow Completion Time) - 小流 (8KB专家流) - 基准: Drill(0)")
     print("="*135)
     print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(小)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
     print("-"*135)
@@ -465,76 +423,6 @@ def print_fct_table(results: Dict[str, SimulationResult]):
 
 def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
     """Print large flow FCT comparison table (8MB background flows)."""
-    # Sort order: Hybrid, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
-    def sort_key(x):
-        mode = x.split('(')[0]
-        if mode == 'Hybrid':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (0, bg)
-        elif mode == 'Hybrid-AS':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (1, bg)
-        elif mode == 'Hybrid-SS':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (2, bg)
-        elif mode == 'Inflex':
-            bg = int(x.split('(')[1].split(')')[0]) if '(' in x else 0
-            return (3, bg)
-        elif mode == 'ECMP':
-            return (4, 0)
-        elif mode == 'Conweave':
-            return (5, 0)
-        return (6, 0)
-
-    sorted_keys = sorted(results.keys(), key=sort_key)
-
-    # Find baseline: use Hybrid(0) if available, otherwise first with large flows
-    baseline = None
-    for key in sorted_keys:
-        if results[key].large_total_flows > 0:
-            baseline = results[key]
-            break
-
-    baseline_avg = baseline.large_avg_fct if baseline else 0
-    baseline_p50 = baseline.large_p50_fct if baseline else 0
-    baseline_p99 = baseline.large_p99_fct if baseline else 0
-
-    print("\n" + "="*150)
-    print("FCT 性能对比 - 大流 (8MB背景流)")
-    print("="*150)
-    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(全部)':>10} {'vs基线Avg':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
-    print("-"*150)
-
-    for key in sorted_keys:
-        r = results[key]
-
-        if r.large_total_flows == 0:
-            continue  # Skip configurations with no large flows
-
-        # Calculate percentage deltas relative to baseline
-        if baseline_avg > 0:
-            avg_delta = ((r.large_avg_fct - baseline_avg) / baseline_avg * 100)
-            avg_str = f"{r.large_avg_fct:.2f} ({format_delta(avg_delta)})"
-        else:
-            avg_str = f"{r.large_avg_fct:.2f}"
-
-        p50_str = f"{r.large_p50_fct:.2f}"
-        p99_str = f"{r.large_p99_fct:.2f}"
-
-        vs_baseline = f"{((r.large_avg_fct - baseline_avg) / baseline_avg * 100):+.1f}%" if baseline_avg > 0 else "N/A"
-
-        large_pfc_str = f"{r.pfc_count_large:,}"
-        large_to_str = f"{r.large_total_timeout:,}"
-        large_avg_to_str = f"{r.large_avg_timeout:.2f}"
-        large_max_to_str = f"{r.large_max_timeout}"
-
-        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {large_pfc_str:>10} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
-
-    print("="*150)
-
-
-def print_qlen_table(results: Dict[str, SimulationResult]):
-    """Print queue length comparison table."""
     # Sort order: Hybrid, MixHash, Drill, Hybrid-AS, Hybrid-SS, Inflex, then others (ECMP, Conweave)
     def sort_key(x):
         mode = x.split('(')[0]
@@ -559,41 +447,56 @@ def print_qlen_table(results: Dict[str, SimulationResult]):
         elif mode == 'ECMP':
             return (6, 0)
         elif mode == 'Conweave':
-            return (7, 0)  # No fecmp_bg for Conweave
+            return (7, 0)
         return (8, 0)
 
     sorted_keys = sorted(results.keys(), key=sort_key)
 
-    # Find Hybrid(0) baseline
-    baseline = results.get("Hybrid(0)")
-    baseline_avg = baseline.avg_qlen if baseline else 0
-    baseline_p50 = baseline.p50_qlen if baseline else 0
-    baseline_p99 = baseline.p99_qlen if baseline else 0
-    baseline_max = baseline.max_qlen if baseline else 0
+    # Find baseline: use Hybrid(0) if available, otherwise first with large flows
+    baseline = None
+    for key in sorted_keys:
+        if results[key].large_total_flows > 0:
+            baseline = results[key]
+            break
 
-    print("\n" + "="*95)
-    print("队列长度统计 (ToR上行链路)")
-    print("="*95)
-    print(f"{'模式':<12} {'Avg(字节)':>15} {'P50(字节)':>15} {'P99(字节)':>15} {'Max(字节)':>15}")
-    print("-"*95)
+    baseline_avg = baseline.large_avg_fct if baseline else 0
+    baseline_p50 = baseline.large_p50_fct if baseline else 0
+    baseline_p99 = baseline.large_p99_fct if baseline else 0
+
+    print("\n" + "="*150)
+    print("FCT 性能对比 - 大流 (8MB背景流)")
+    print("="*150)
+    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(全部)':>10} {'vs基线P99':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*150)
 
     for key in sorted_keys:
         r = results[key]
 
-        # Calculate percentage deltas
-        avg_delta = ((r.avg_qlen - baseline_avg) / baseline_avg * 100) if baseline_avg > 0 else 0
-        p50_delta = ((r.p50_qlen - baseline_p50) / baseline_p50 * 100) if baseline_p50 > 0 else 0
-        p99_delta = ((r.p99_qlen - baseline_p99) / baseline_p99 * 100) if baseline_p99 > 0 else 0
-        max_delta = ((r.max_qlen - baseline_max) / baseline_max * 100) if baseline_max > 0 else 0
+        if r.large_total_flows == 0:
+            continue  # Skip configurations with no large flows
+        if key.split('(')[0] == 'Drill':
+            continue  # Skip Drill modes in large flow table
 
-        avg_str = f"{int(r.avg_qlen):,} ({format_delta(avg_delta)})"
-        p50_str = f"{int(r.p50_qlen):,} ({format_delta(p50_delta)})"
-        p99_str = f"{int(r.p99_qlen):,} ({format_delta(p99_delta)})"
-        max_str = f"{int(r.max_qlen):,} ({format_delta(max_delta)})"
+        # Calculate percentage deltas relative to baseline (using P99 for comparison)
+        avg_str = f"{r.large_avg_fct:.2f}"
+        p50_str = f"{r.large_p50_fct:.2f}"
 
-        print(f"{key:<12} {avg_str:>15} {p50_str:>15} {p99_str:>15} {max_str:>15}")
+        if baseline_p99 > 0:
+            p99_delta = ((r.large_p99_fct - baseline_p99) / baseline_p99 * 100)
+            p99_str = f"{r.large_p99_fct:.2f} ({format_delta(p99_delta)})"
+            vs_baseline = f"{p99_delta:+.1f}%"
+        else:
+            p99_str = f"{r.large_p99_fct:.2f}"
+            vs_baseline = "N/A"
 
-    print("="*95)
+        large_pfc_str = f"{r.pfc_count_large:,}"
+        large_to_str = f"{r.large_total_timeout:,}"
+        large_avg_to_str = f"{r.large_avg_timeout:.2f}"
+        large_max_to_str = f"{r.large_max_timeout}"
+
+        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {large_pfc_str:>10} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
+
+    print("="*150)
 
 
 def print_summary(results: Dict[str, SimulationResult]):
@@ -771,7 +674,6 @@ def main():
     # Print tables
     print_fct_table(results)
     print_large_flow_fct_table(results)
-    print_qlen_table(results)
     print_summary(results)
 
 

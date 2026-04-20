@@ -777,11 +777,11 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     seqTs.SetSeq(seq);
     seqTs.SetPG(qp->m_pg);
     seqTs.SetTag(qp->m_tag);  // Set tag field from queue pair
-    // Only increment ecmp_counter for mode=16 (mixhash) and tag=1
-    if (Settings::lb_mode == 16 && qp->m_tag == 1) {
+    // Only increment ecmp_counter for mode=16 (mixhash) - all flows use counter
+    if (Settings::lb_mode == 16) {
         seqTs.SetEcmpCounter(qp->m_ecmpCounter++);
     } else {
-        seqTs.SetEcmpCounter(0);  // Set to 0 for other modes/tags
+        seqTs.SetEcmpCounter(0);  // Set to 0 for other modes
     }
     p->AddHeader(seqTs);
     // add udp header

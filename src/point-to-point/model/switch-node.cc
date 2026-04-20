@@ -562,10 +562,10 @@ bool SwitchNode::IsHostPort(uint32_t port) {
 
 // Process packet through reorder buffer, returns true if packet was consumed (buffered/sent)
 bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t outPort) {
-    // Only process UDP packets with tag=1 in mode 16 (mixhash)
+    // Only process UDP packets in mode 16 (mixhash), excluding tag=2
     if (Settings::lb_mode != 16) return false;  // Only mode 16 uses reorder buffer
     if (ch.l3Prot != 0x11) return false;         // Not UDP, skip processing
-    if (ch.udp.tag != 1) return false;           // Only tag=1 uses reorder buffer
+    if (ch.udp.tag == 2) return false;           // tag=2 does NOT use reorder buffer
 
     // Create flow key
     FlowKey flowKey;
@@ -857,30 +857,18 @@ int SwitchNode::GetOutDev(Ptr<Packet> p, CustomHeader &ch) {
         return DoLbDrill(p, ch, nexthops);
     }
 
-    // MixHash mode (lb_mode=16): mix of ECMP with counter and DRILL
+    // MixHash mode (lb_mode=16): all flows use ECMP with counter (except control packets)
     if (Settings::lb_mode == 16) {
         // Control packets use ECMP without counter
         if (control_pkt) {
             return DoLbFlowECMP(p, ch, nexthops);
         }
-        // tag == 1 -> FlowECMP with counter
-        if (ch.udp.tag == 1) {
-            Settings::tag1_ecmp_count++;
+        // All data packets use ECMP with counter (regardless of tag)
+        Settings::tag1_ecmp_count++;
 #if (DEBUG_TAG_ROUTING == true)
-            std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+Counter (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
+        std::cout << "[MixHash] tag=" << ch.udp.tag << " using ECMP+Counter (total=" << Settings::tag1_ecmp_count << ")" << std::endl;
 #endif
-            return DoLbFlowECMPWithCounter(p, ch, nexthops);
-        }
-        // tag == 2 -> DRILL
-        if (ch.udp.tag == 2) {
-            Settings::tag2_drill_count++;
-#if (DEBUG_TAG_ROUTING == true)
-            std::cout << "[MixHash] tag=" << ch.udp.tag << " using DRILL (total=" << Settings::tag2_drill_count << ")" << std::endl;
-#endif
-            return DoLbDrill(p, ch, nexthops);
-        }
-        // Default (tag == 0 or other): use ECMP
-        return DoLbFlowECMP(p, ch, nexthops);
+        return DoLbFlowECMPWithCounter(p, ch, nexthops);
     }
 
     // ECMP-Conweave mode (lb_mode=11): use pg field to determine per-flow load balancing

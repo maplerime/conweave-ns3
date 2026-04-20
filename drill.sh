@@ -132,14 +132,17 @@ cecho "GREEN" "\n=========================================="
 cecho "GREEN" "Run Hybrid experiments"
 cecho "GREEN" "=========================================="
 
-FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_64fecmp.txt"
+FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
 run_simulation "drill" "0" "$FLOW_FILE"
+
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_64fecmp.txt"
+run_simulation "drill" "64" "$FLOW_FILE"
 
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_128fecmp.txt"
-run_simulation "drill" "0" "$FLOW_FILE"
+run_simulation "drill" "128" "$FLOW_FILE"
 
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
-run_simulation "drill" "0" "$FLOW_FILE"
+run_simulation "drill" "192" "$FLOW_FILE"
 
 # Kill any remaining monitor processes
 cleanup() {

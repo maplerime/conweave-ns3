@@ -13,7 +13,7 @@ cecho(){  # source: https://stackoverflow.com/a/53463162/2886168
 cecho "GREEN" "Running RDMA Network Load Balancing Simulations (leaf-spine topology)"
 
 TOPOLOGY="leaf_spine_128_100G_OS2" # or, fat_k8_100G_OS2
-NETLOAD="50" # network load 80%
+NETLOAD="80" # network load 80%
 RUNTIME="0.01" # 0.1 second (traffic generation)
 
 cecho "YELLOW" "\n----------------------------------"

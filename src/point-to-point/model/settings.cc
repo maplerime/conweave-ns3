@@ -34,7 +34,7 @@ uint64_t Settings::tag2_adaptive_spray_count = 0;
 uint64_t Settings::tag2_random_spray_count = 0;
 
 /* Reorder buffer settings for mode 16 */
-uint32_t Settings::reorder_queue_num = 5;  // Default: 5 reorder queues
+uint32_t Settings::reorder_queue_num = 9;  // Default: 9 reorder queues
 
 /* for load balancer */
 std::map<uint32_t, uint32_t> Settings::hostIp2SwitchId;

@@ -146,26 +146,33 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
     if not fct_values:
         return 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0, total_flows, 0.0, 0.0, 0.0, large_total_flows, 0.0, 0.0, 0
 
-    fct_values = np.array(fct_values)
-    avg_us = np.mean(fct_values) / 1000  # Convert to microseconds
-    stddev_us = np.std(fct_values) / 1000
+    # Convert to numpy for statistics calculation
+    fct_array = np.array(fct_values)
+    avg_us = np.mean(fct_array) / 1000  # Convert to microseconds
+    stddev_us = np.std(fct_array) / 1000
 
-    p50_us, p99_us = calculate_percentiles(fct_values)
-    p50_us /= 1000
-    p99_us /= 1000
+    # Calculate percentiles
+    sorted_fct = np.sort(fct_array)
+    n = len(sorted_fct)
+    p50_idx = min(int(n * 0.5), n - 1)
+    p99_idx = min(int(n * 0.99), n - 1)
+    p50_us = sorted_fct[p50_idx] / 1000
+    p99_us = sorted_fct[p99_idx] / 1000
 
     # Timeout statistics
     total_timeout = sum(timeout_counts)
-    avg_timeout = np.mean(timeout_counts) if timeout_counts else 0.0
+    avg_timeout = float(sum(timeout_counts)) / len(timeout_counts) if timeout_counts else 0.0
     max_timeout = max(timeout_counts) if timeout_counts else 0
 
     # Large flow FCT statistics
     if large_fct_values:
-        large_fct_values = np.array(large_fct_values)
-        large_avg_us = np.mean(large_fct_values) / 1000
-        large_p50_us, large_p99_us = calculate_percentiles(large_fct_values)
-        large_p50_us /= 1000
-        large_p99_us /= 1000
+        large_avg_us = sum(large_fct_values) / len(large_fct_values) / 1000
+        sorted_large = sorted(large_fct_values)
+        n_large = len(sorted_large)
+        p50_idx_large = min(int(n_large * 0.5), n_large - 1)
+        p99_idx_large = min(int(n_large * 0.99), n_large - 1)
+        large_p50_us = sorted_large[p50_idx_large] / 1000
+        large_p99_us = sorted_large[p99_idx_large] / 1000
     else:
         large_avg_us = 0.0
         large_p50_us = 0.0
@@ -173,7 +180,7 @@ def read_fct_results(fct_path: str) -> Tuple[float, float, float, float, int, fl
 
     # Large flow timeout statistics
     large_total_timeout = sum(large_timeout_counts)
-    large_avg_timeout = np.mean(large_timeout_counts) if large_timeout_counts else 0.0
+    large_avg_timeout = float(sum(large_timeout_counts)) / len(large_timeout_counts) if large_timeout_counts else 0.0
     large_max_timeout = max(large_timeout_counts) if large_timeout_counts else 0
 
     return avg_us, p50_us, p99_us, stddev_us, total_timeout, avg_timeout, max_timeout, total_flows, large_avg_us, large_p50_us, large_p99_us, large_total_flows, large_total_timeout, large_avg_timeout, large_max_timeout
@@ -393,11 +400,11 @@ def print_fct_table(results: Dict[str, SimulationResult]):
     baseline_p50 = baseline.p50_fct if baseline else 0
     baseline_p99 = baseline.p99_fct if baseline else 0
 
-    print("\n" + "="*135)
+    print("\n" + "="*140)
     print("FCT 性能对比 (Flow Completion Time) - 小流 (8KB专家流) - 基准: Drill(0)")
-    print("="*135)
-    print(f"{'模式':<12} {'总流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(小)':>10} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
-    print("-"*135)
+    print("="*140)
+    print(f"{'Mode':<12} {'Flows':>10} {'Avg(us)':>10} {'Avg(Δ%)':>10} {'P99(us)':>10} {'P99(Δ%)':>10} {'PFC':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*140)
 
     for key in sorted_keys:
         r = results[key]
@@ -407,18 +414,14 @@ def print_fct_table(results: Dict[str, SimulationResult]):
         p50_delta = ((r.p50_fct - baseline_p50) / baseline_p50 * 100) if baseline_p50 > 0 else 0
         p99_delta = ((r.p99_fct - baseline_p99) / baseline_p99 * 100) if baseline_p99 > 0 else 0
 
-        avg_str = f"{r.avg_fct:.2f} ({format_delta(avg_delta)})"
-        p50_str = f"{r.p50_fct:.2f} ({format_delta(p50_delta)})"
-        p99_str = f"{r.p99_fct:.2f} ({format_delta(p99_delta)})"
-
-        pfc_str = f"{r.pfc_count_small:,}"  # Use small flow PFC count for small flow table
+        pfc_str = f"{r.pfc_count_small:,}"
         timeout_str = f"{r.total_timeout:,}"
         avg_to_str = f"{r.avg_timeout:.2f}"
         max_to_str = f"{r.max_timeout}"
 
-        print(f"{key:<12} {r.total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {pfc_str:>10} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
+        print(f"{key:<12} {r.total_flows:>10} {r.avg_fct:>10.2f} {avg_delta:>+9.1f}% {r.p99_fct:>10.2f} {p99_delta:>+9.1f}% {pfc_str:>12} {timeout_str:>12} {avg_to_str:>10} {max_to_str:>8}")
 
-    print("="*135)
+    print("="*140)
 
 
 def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
@@ -456,11 +459,11 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
     baseline_p50 = baseline.large_p50_fct if baseline else 0
     baseline_p99 = baseline.large_p99_fct if baseline else 0
 
-    print("\n" + "="*150)
+    print("\n" + "="*140)
     print("FCT 性能对比 - 大流 (8MB背景流) - 基准: ECMP")
-    print("="*150)
-    print(f"{'模式':<12} {'大流数':>10} {'Avg(μs)':>14} {'P50(μs)':>12} {'P99(μs)':>12} {'PFC(全部)':>10} {'vs基线P99':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
-    print("-"*150)
+    print("="*140)
+    print(f"{'Mode':<12} {'LargeFlows':>10} {'Avg(us)':>10} {'Avg(Δ%)':>10} {'P99(us)':>10} {'P99(Δ%)':>10} {'PFC':>12} {'TotalTO':>12} {'AvgTO':>10} {'MaxTO':>8}")
+    print("-"*140)
 
     for key in sorted_keys:
         r = results[key]
@@ -470,26 +473,18 @@ def print_large_flow_fct_table(results: Dict[str, SimulationResult]):
         if key.split('(')[0] == 'Drill':
             continue  # Skip Drill modes in large flow table
 
-        # Calculate percentage deltas relative to baseline (using P99 for comparison)
-        avg_str = f"{r.large_avg_fct:.2f}"
-        p50_str = f"{r.large_p50_fct:.2f}"
-
-        if baseline_p99 > 0:
-            p99_delta = ((r.large_p99_fct - baseline_p99) / baseline_p99 * 100)
-            p99_str = f"{r.large_p99_fct:.2f} ({format_delta(p99_delta)})"
-            vs_baseline = f"{p99_delta:+.1f}%"
-        else:
-            p99_str = f"{r.large_p99_fct:.2f}"
-            vs_baseline = "N/A"
+        # Calculate percentage deltas relative to baseline (ECMP)
+        avg_delta = ((r.large_avg_fct - baseline_avg) / baseline_avg * 100) if baseline_avg > 0 else 0
+        p99_delta = ((r.large_p99_fct - baseline_p99) / baseline_p99 * 100) if baseline_p99 > 0 else 0
 
         large_pfc_str = f"{r.pfc_count_large:,}"
         large_to_str = f"{r.large_total_timeout:,}"
         large_avg_to_str = f"{r.large_avg_timeout:.2f}"
         large_max_to_str = f"{r.large_max_timeout}"
 
-        print(f"{key:<12} {r.large_total_flows:>10} {avg_str:>14} {p50_str:>12} {p99_str:>12} {large_pfc_str:>10} {vs_baseline:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
+        print(f"{key:<12} {r.large_total_flows:>10} {r.large_avg_fct:>10.2f} {avg_delta:>+9.1f}% {r.large_p99_fct:>10.2f} {p99_delta:>+9.1f}% {large_pfc_str:>12} {large_to_str:>12} {large_avg_to_str:>10} {large_max_to_str:>8}")
 
-    print("="*150)
+    print("="*140)
 
 
 def print_summary(results: Dict[str, SimulationResult]):

@@ -232,11 +232,16 @@ def scan_output_directory(base_path: str, size_min: int = 0, size_max: int = Non
 
 def format_value_with_delta(val: float, baseline: float, decimals: int = 2) -> str:
     """Format value with percentage delta relative to baseline."""
+    return f"{val:.{decimals}f}"
+
+
+def format_delta(val: float, baseline: float) -> str:
+    """Format percentage delta relative to baseline."""
     if baseline > 0:
         delta = ((val - baseline) / baseline * 100)
         sign = "+" if delta > 0 else ""
-        return f"{val:.{decimals}f} ({sign}{delta:.1f}%)"
-    return f"{val:.{decimals}f}"
+        return f"{sign}{delta:.1f}%"
+    return "-"
 
 
 def format_size_range(size_min: int, size_max: Optional[int]) -> str:
@@ -275,24 +280,24 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*160)
-            print(f"FCT 性能对比 (PFC=1, IRN=0) - {size_range_str}")
-            print("="*160)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
-            print("-"*160)
+            print("\n" + "="*150)
+            print(f"FCT Performance Comparison (PFC=1, IRN=0) - {size_range_str}")
+            print("="*150)
+            print(f"{'Mode':<12} {'Flows':>10} {'Avg(us)':>12} {'Avg(Δ%)':>12} {'P99(us)':>12} {'P99(Δ%)':>12} {'PFC':>10} {'ReTx':>10}")
+            print("-"*150)
 
             for mode in pfc_order:
                 key = f"{mode}(PFC)"
                 if key not in results:
                     continue
                 r = results[key]
-                avg_str = format_value_with_delta(r.avg_fct, baseline_avg)
-                p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
-                p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
-                p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
+                avg_val = format_value_with_delta(r.avg_fct, baseline_avg)
+                avg_delta = format_delta(r.avg_fct, baseline_avg)
+                p99_val = format_value_with_delta(r.p99_fct, baseline_p99)
+                p99_delta = format_delta(r.p99_fct, baseline_p99)
+                print(f"{mode:<12} {r.total_flows:>10} {avg_val:>12} {avg_delta:>12} {p99_val:>12} {p99_delta:>12} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*160)
+            print("="*150)
 
     # Section 2: IRN (IRN=1, PFC=0)
     has_irn = any(f"{mode}(IRN)" in results for mode in irn_order)
@@ -310,24 +315,24 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*160)
-            print(f"FCT 性能对比 (IRN=1, PFC=0) - {size_range_str}")
-            print("="*160)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
-            print("-"*160)
+            print("\n" + "="*150)
+            print(f"FCT Performance Comparison (IRN=1, PFC=0) - {size_range_str}")
+            print("="*150)
+            print(f"{'Mode':<12} {'Flows':>10} {'Avg(us)':>12} {'Avg(Δ%)':>12} {'P99(us)':>12} {'P99(Δ%)':>12} {'PFC':>10} {'ReTx':>10}")
+            print("-"*150)
 
             for mode in irn_order:
                 key = f"{mode}(IRN)"
                 if key not in results:
                     continue
                 r = results[key]
-                avg_str = format_value_with_delta(r.avg_fct, baseline_avg)
-                p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
-                p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
-                p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
+                avg_val = format_value_with_delta(r.avg_fct, baseline_avg)
+                avg_delta = format_delta(r.avg_fct, baseline_avg)
+                p99_val = format_value_with_delta(r.p99_fct, baseline_p99)
+                p99_delta = format_delta(r.p99_fct, baseline_p99)
+                print(f"{mode:<12} {r.total_flows:>10} {avg_val:>12} {avg_delta:>12} {p99_val:>12} {p99_delta:>12} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*160)
+            print("="*150)
 
     # Section 3: PFC+IRN (IRN=1, PFC=1)
     has_pfc_irn = any(f"{mode}(PFC+IRN)" in results for mode in pfc_irn_order)
@@ -345,24 +350,24 @@ def print_fct_table(results: Dict[str, SimulationResult], section_title: str, si
             baseline_p90 = baseline.p90_fct
             baseline_p99 = baseline.p99_fct
 
-            print("\n" + "="*160)
-            print(f"FCT 性能对比 (PFC=1, IRN=1) - {size_range_str}")
-            print("="*160)
-            print(f"{'模式':<12} {'流数':>10} {'Avg(μs)':>18} {'P50(μs)':>18} {'P90(μs)':>18} {'P99(μs)':>18} {'PFC':>10} {'重传':>10}")
-            print("-"*160)
+            print("\n" + "="*150)
+            print(f"FCT Performance Comparison (PFC=1, IRN=1) - {size_range_str}")
+            print("="*150)
+            print(f"{'Mode':<12} {'Flows':>10} {'Avg(us)':>12} {'Avg(Δ%)':>12} {'P99(us)':>12} {'P99(Δ%)':>12} {'PFC':>10} {'ReTx':>10}")
+            print("-"*150)
 
             for mode in pfc_irn_order:
                 key = f"{mode}(PFC+IRN)"
                 if key not in results:
                     continue
                 r = results[key]
-                avg_str = format_value_with_delta(r.avg_fct, baseline_avg)
-                p50_str = format_value_with_delta(r.p50_fct, baseline_p50)
-                p90_str = format_value_with_delta(r.p90_fct, baseline_p90)
-                p99_str = format_value_with_delta(r.p99_fct, baseline_p99)
-                print(f"{mode:<12} {r.total_flows:>10} {avg_str:>18} {p50_str:>18} {p90_str:>18} {p99_str:>18} {r.pfc_count:>10} {r.total_retrans:>10}")
+                avg_val = format_value_with_delta(r.avg_fct, baseline_avg)
+                avg_delta = format_delta(r.avg_fct, baseline_avg)
+                p99_val = format_value_with_delta(r.p99_fct, baseline_p99)
+                p99_delta = format_delta(r.p99_fct, baseline_p99)
+                print(f"{mode:<12} {r.total_flows:>10} {avg_val:>12} {avg_delta:>12} {p99_val:>12} {p99_delta:>12} {r.pfc_count:>10} {r.total_retrans:>10}")
 
-            print("="*160)
+            print("="*150)
 
 
 def print_summary(results: Dict[str, SimulationResult], section_title: str):

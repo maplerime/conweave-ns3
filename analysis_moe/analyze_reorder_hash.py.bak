@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""
+分析MixHash模式下流的四元组hash值和reorder队列分布
+
+计算:
+1. 流的hash值 (Murmur3 x86_32, seed=0x8BADF00D)
+2. ecmp_counter % 8 的值 (reorder队列索引)
+3. hash % 8 的值
+"""
+
+import struct
+import sys
+from pathlib import Path
+
+# Murmur3 x86_32 hash implementation (same as ns-3)
+def murmur3_x86_32(data, seed=0x8BADF00D):
+    """
+    Murmur3 x86_32 hash function
+
+    Args:
+        data: bytes to hash
+        seed: hash seed (default 0x8BADF00D, same as ns-3)
+
+    Returns:
+        32-bit hash value
+    """
+    def rotl32(x, r):
+        return (x << r) | (x >> (32 - r))
+
+    h1 = seed
+    c1 = 0xcc9e2d51
+    c2 = 0x1b873593
+
+    length = len(data)
+    nblocks = length // 4
+
+    # Process blocks
+    blocks = struct.unpack('<' + 'I' * nblocks, data[:nblocks * 4])
+    for k1 in blocks:
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = rotl32(k1, 15)
+        k1 = (k1 * c2) & 0xFFFFFFFF
+        h1 = (h1 ^ k1) & 0xFFFFFFFF
+        h1 = rotl32(h1, 13)
+        h1 = ((h1 * 5) + 0xe6546b64) & 0xFFFFFFFF
+
+    # Process tail
+    tail = data[nblocks * 4:]
+    k1 = 0
+    tail_size = length & 3
+    if tail_size == 3:
+        k1 ^= tail[2] << 16
+    if tail_size >= 2:
+        k1 ^= tail[1] << 8
+    if tail_size >= 1:
+        k1 ^= tail[0]
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = rotl32(k1, 15)
+        k1 = (k1 * c2) & 0xFFFFFFFF
+        h1 = (h1 ^ k1) & 0xFFFFFFFF
+
+    # Finalization
+    h1 = (h1 ^ length) & 0xFFFFFFFF
+
+    # fmix
+    h1 ^= h1 >> 16
+    h1 = ((h1 * 0x85ebca6b) & 0xFFFFFFFF)
+    h1 ^= h1 >> 13
+    h1 = ((h1 * 0xc2b2ae35) & 0xFFFFFFFF)
+    h1 ^= h1 >> 16
+
+    return h1
+
+
+def calculate_flow_hash(sip, dip, sport, dport):
+    """
+    计算流的hash值 (与ns-3 RdmaQueuePair::GetHash相同)
+
+    Args:
+        sip: source IP (uint32, host byte order)
+        dip: destination IP (uint32, host byte order)
+        sport: source port (uint16)
+        dport: destination port (uint16)
+
+    Returns:
+        32-bit hash value
+    """
+    # Pack into 12 bytes: sip(4) + dip(4) + sport(2) + dport(2)
+    data = struct.pack('<IIHH', sip, dip, sport, dport)
+    return murmur3_x86_32(data)
+
+
+def calculate_flow_hash_with_queue(sip, dip, sport, dport, queue_idx):
+    """
+    计算流+队列的hash值 (四元组 + ecmp_counter%8)
+
+    Args:
+        sip: source IP (uint32)
+        dip: destination IP (uint32)
+        sport: source port (uint16)
+        dport: destination port (uint16)
+        queue_idx: queue index (ecmp_counter % 8)
+
+    Returns:
+        32-bit hash value
+    """
+    # Pack into 13 bytes: sip(4) + dip(4) + sport(2) + dport(2) + queue(1)
+    data = struct.pack('<IIHHB', sip, dip, sport, dport, queue_idx)
+    return murmur3_x86_32(data)
+
+
+def ip_to_uint32(ip_str):
+    """Convert IP string '10.0.0.1' to uint32"""
+    parts = ip_str.split('.')
+    return (int(parts[0]) << 24) | (int(parts[1]) << 16) | \
+           (int(parts[2]) << 8) | int(parts[3])
+
+
+def uint32_to_ip(ip_uint):
+    """Convert uint32 to IP string"""
+    return f"{(ip_uint >> 24) & 0xFF}.{(ip_uint >> 16) & 0xFF}.{(ip_uint >> 8) & 0xFF}.{ip_uint & 0xFF}"
+
+
+def print_separator():
+    print("=" * 140)
+
+
+def analyze_flow_from_line(line):
+    """
+    分析一行流数据
+
+    输入格式: sip dip sport dport [ecmp_counter_start]
+    或:     10.0.0.1 10.0.1.1 5000 6000
+    """
+    parts = line.strip().split()
+    if len(parts) < 4:
+        return None
+
+    sip_str = parts[0]
+    dip_str = parts[1]
+    sport = int(parts[2])
+    dport = int(parts[3])
+    ecmp_start = int(parts[4]) if len(parts) > 4 else 0
+    num_packets = int(parts[5]) if len(parts) > 5 else 10
+
+    sip = ip_to_uint32(sip_str)
+    dip = ip_to_uint32(dip_str)
+
+    flow_hash = calculate_flow_hash(sip, dip, sport, dport)
+    hash_mod_8 = flow_hash % 8
+
+    results = []
+    for i in range(num_packets):
+        ecmp_counter = ecmp_start + i
+        ecmp_mod_8 = ecmp_counter % 8
+        results.append({
+            'sip': sip_str,
+            'dip': dip_str,
+            'sport': sport,
+            'dport': dport,
+            'flow_hash': flow_hash,
+            'hash_mod_8': hash_mod_8,
+            'ecmp_counter': ecmp_counter,
+            'ecmp_mod_8': ecmp_mod_8,
+        })
+
+    return results
+
+
+def analyze_reorder_distribution(sip, dip, sport, dport, ecmp_start=0, num_pkts=16):
+    """
+    分析单个流的reorder队列分布
+
+    Args:
+        sip: source IP string (e.g., '10.0.0.1')
+        dip: dest IP string
+        sport: source port
+        dport: dest port
+        ecmp_start: starting ecmp_counter value
+        num_pkts: number of packets to analyze
+    """
+    sip_uint = ip_to_uint32(sip)
+    dip_uint = ip_to_uint32(dip)
+
+    print_separator()
+    print(f"Flow: {sip}:{sport} -> {dip}:{dport}")
+    print(f"SIP(uint32): {sip_uint:#010x}  DIP(uint32): {dip_uint:#010x}")
+    print(f"Reorder Queue Num: 8")
+    print(f"Hash Input: 4-tuple + ecmp_counter%8")
+    print()
+
+    # Header
+    print(f"{'Pkt':>4} {'ECMP_Ctr':>10} {'Queue':>6} {'Hash(4+Q)':>12} {'Hash%8':>8}")
+    print("-" * 50)
+
+    queue_distribution = {}
+    hash_distribution = {}
+    for i in range(num_pkts):
+        ecmp_counter = ecmp_start + i
+        queue_idx = ecmp_counter % 8
+        queue_distribution[queue_idx] = queue_distribution.get(queue_idx, 0) + 1
+
+        # Calculate hash with queue included
+        hash_with_queue = calculate_flow_hash_with_queue(sip_uint, dip_uint, sport, dport, queue_idx)
+        hash_mod_8 = hash_with_queue % 8
+        hash_distribution[hash_mod_8] = hash_distribution.get(hash_mod_8, 0) + 1
+
+        print(f"{i+1:>4} {ecmp_counter:>10} {queue_idx:>6} {hash_with_queue:#010x} {hash_mod_8:>8}")
+
+    print()
+    print("Hash Distribution (Hash(4+Q) % 8):")
+    for h in sorted(hash_distribution.keys()):
+        bar = '█' * (hash_distribution[h] * 2)
+        print(f"  Hash%8 {h}: {hash_distribution[h]:>2} packets {bar}")
+
+
+def analyze_random_ports(sip, dip, num_flows, num_pkts_per_flow=16, seed=42):
+    """
+    分析随机端口的多流hash分布
+
+    Args:
+        sip: source IP string
+        dip: dest IP string
+        num_flows: number of flows to analyze
+        num_pkts_per_flow: packets per flow (default 16)
+        seed: random seed
+    """
+    import random
+    random.seed(seed)
+
+    sip_uint = ip_to_uint32(sip)
+    dip_uint = ip_to_uint32(dip)
+
+    print_separator()
+    print(f"Multi-Flow Hash Analysis (Random Ports)")
+    print(f"Source: {sip}  Dest: {dip}")
+    print(f"Number of Flows: {num_flows}")
+    print(f"Packets per Flow: {num_pkts_per_flow}")
+    print(f"Hash Input: 4-tuple + ecmp_counter%8")
+    print_separator()
+
+    # 统计所有hash分布
+    total_hash_distribution = {i: 0 for i in range(8)}
+
+    for flow_idx in range(num_flows):
+        sport = random.randint(1024, 65535)
+        dport = random.randint(1024, 65535)
+
+        flow_hash_distribution = {i: 0 for i in range(8)}
+
+        for pkt_idx in range(num_pkts_per_flow):
+            ecmp_counter = pkt_idx
+            queue_idx = ecmp_counter % 8
+            hash_with_queue = calculate_flow_hash_with_queue(sip_uint, dip_uint, sport, dport, queue_idx)
+            hash_mod_8 = hash_with_queue % 8
+            flow_hash_distribution[hash_mod_8] += 1
+            total_hash_distribution[hash_mod_8] += 1
+
+    print("\nPer-Flow Hash Distribution (first 10 flows):")
+    print(f"{'Flow':>4} {'Sport':>6} {'Dport':>6}  " + " ".join([f"H{i}:>3" for i in range(8)]))
+    print("-" * 50)
+
+    random.seed(seed)
+    for flow_idx in range(min(10, num_flows)):
+        sport = random.randint(1024, 65535)
+        dport = random.randint(1024, 65535)
+        flow_hash_distribution = {i: 0 for i in range(8)}
+
+        for pkt_idx in range(num_pkts_per_flow):
+            ecmp_counter = pkt_idx
+            queue_idx = ecmp_counter % 8
+            hash_with_queue = calculate_flow_hash_with_queue(sip_uint, dip_uint, sport, dport, queue_idx)
+            hash_mod_8 = hash_with_queue % 8
+            flow_hash_distribution[hash_mod_8] += 1
+
+        counts = [flow_hash_distribution[i] for i in range(8)]
+        print(f"{flow_idx+1:>4} {sport:>6} {dport:>6}  " + " ".join([f"{c:>3}" for c in counts]))
+
+    print("\nTotal Hash Distribution (all {} flows):".format(num_flows))
+    for h in range(8):
+        pct = total_hash_distribution[h] / (num_flows * num_pkts_per_flow) * 100
+        bar = '█' * int(pct / 2)
+        print(f"  Hash%8 {h}: {total_hash_distribution[h]:>6} packets ({pct:>5.1f}%) {bar}")
+
+
+def main():
+    import random
+
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print(f"  {sys.argv[0]} <sip> <dip> <sport> <dport> [ecmp_start] [num_pkts]")
+        print(f"  {sys.argv[0]} --random <sip> <dip> <num_flows> [num_pkts_per_flow]")
+        print(f"  {sys.argv[0]} --file <flow_file>")
+        print()
+        print("Examples:")
+        print(f"  {sys.argv[0]} 10.0.0.1 10.0.1.1 5000 6000 0 16")
+        print(f"  {sys.argv[0]} --random 10.0.0.1 10.0.1.1 1000 16")
+        print(f"  {sys.argv[0]} --file flows.txt")
+        sys.exit(1)
+
+    if sys.argv[1] == '--random':
+        # 随机端口多流分析
+        sip = sys.argv[2]
+        dip = sys.argv[3]
+        num_flows = int(sys.argv[4])
+        num_pkts = int(sys.argv[5]) if len(sys.argv) > 5 else 16
+
+        print_separator()
+        print("Reorder Hash Analysis (MixHash Mode 16)")
+        print(f"Reorder Queue Num: 8")
+        print(f"Hash Algorithm: Murmur3 x86_32, seed=0x8BADF00D")
+        print_separator()
+
+        analyze_random_ports(sip, dip, num_flows, num_pkts)
+
+    elif sys.argv[1] == '--file':
+        # 从文件读取流信息
+        flow_file = sys.argv[2]
+        print_separator()
+        print(f"Reorder Hash Analysis - File: {flow_file}")
+        print_separator()
+
+        with open(flow_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                results = analyze_flow_from_line(line)
+                if results:
+                    analyze_reorder_distribution(
+                        results[0]['sip'], results[0]['dip'],
+                        results[0]['sport'], results[0]['dport'],
+                        results[0]['ecmp_counter'],
+                        len(results)
+                    )
+    else:
+        # 命令行参数
+        sip = sys.argv[1]
+        dip = sys.argv[2]
+        sport = int(sys.argv[3])
+        dport = int(sys.argv[4])
+        ecmp_start = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+        num_pkts = int(sys.argv[6]) if len(sys.argv) > 6 else 16
+
+        print_separator()
+        print("Reorder Hash Analysis (MixHash Mode 16)")
+        print(f"Reorder Queue Num: 8")
+        print(f"Hash Algorithm: Murmur3 x86_32, seed=0x8BADF00D")
+        print_separator()
+
+        analyze_reorder_distribution(sip, dip, sport, dport, ecmp_start, num_pkts)
+
+    print_separator()
+    print("\nNotes:")
+    print("  - Hash Input: 4-tuple (sip,dip,sport,dport) + ecmp_counter%8")
+    print("  - Queue Index: ecmp_counter % 8")
+    print("  - Each flow maintains its own ecmp_counter (starts at 0)")
+    print("  - Random ports: sport and dport are randomized per flow")
+
+
+if __name__ == '__main__':
+    main()

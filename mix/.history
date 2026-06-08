@@ -1,1 +1,53 @@
 date,id,ccmode,lbmode,cwh_tx_expiry_time,cwh_extra_reply_deadline,cwh_path_pause_time,cwh_extra_voq_flush_time,cwh_default_voq_waiting_time,pfc,irn,has_win,var_win,topo,bw,cdf,load,time
+05/30/26,77893293,1,10,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/77893293/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/77893293/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/77893293/config.txt'
+
+05/30/26,370097949,1,10,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/370097949/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/370097949/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/370097949/config.txt'
+
+05/30/26,203867974,1,10,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/203867974/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/203867974/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/203867974/config.txt'
+
+05/30/26,220739464,1,10,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/220739464/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/220739464/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/220739464/config.txt'
+
+05/30/26,263687379,1,16,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/263687379/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/263687379/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/263687379/config.txt'
+
+05/30/26,154423392,1,16,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/154423392/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/154423392/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/154423392/config.txt'
+
+05/30/26,589764032,1,16,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/589764032/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/589764032/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/589764032/config.txt'
+
+05/30/26,175510357,1,16,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/175510357/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/175510357/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/175510357/config.txt'
+
+05/30/26,760794943,1,0,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/760794943/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/760794943/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/760794943/config.txt'
+
+05/30/26,191512900,1,2,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/191512900/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/191512900/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/191512900/config.txt'
+
+05/30/26,583935485,1,2,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/583935485/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/583935485/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/583935485/config.txt'
+
+05/30/26,631470103,1,2,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/631470103/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/631470103/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/631470103/config.txt'
+
+05/30/26,694944130,1,2,1000,4,16,64,400,1,1,0,0,topo_1280_400G_400G_OS1,400,AliStorage2019,50,0.01
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/694944130/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/694944130/config.log 2>&1
+./waf --run 'scratch/network-load-balance' --command-template='gdb --args %s /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/694944130/config.txt'
+

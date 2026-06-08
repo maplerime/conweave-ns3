@@ -1,0 +1,12 @@
+Using pre-generated flow file: test_mode11_100flows.txt
+All NIC bandwidth is 100Gbps
+The new directory is created  - /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/995351899/
+Config filename:/home/eileen/ns-allinone-3.19/ns-3.19/mix/output/995351899/config.txt
+1BDP = 153000
+Running simulation...
+./waf --run 'scratch/network-load-balance /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/995351899/config.txt' > /home/eileen/ns-allinone-3.19/ns-3.19/mix/output/995351899/config.log 2>&1
+Analyzing output FCT...
+python3 fctAnalysis.py -id 995351899 -dir /home/eileen/ns-allinone-3.19/ns-3.19 -bdp 153000 -sT 2005000000 -fT 2150000000 > /dev/null 2>&1
+
+
+============== Done ============== 

@@ -1,6 +1,7 @@
-k_fat = 12
-oversubscript = 2 # over-subscription between ToR uplink - downlink
-link_rate = 100 # Gbps
+k_fat = 16
+oversubscript = 1.25 # over-subscription (1280 hosts: 128*10=1280)
+host_link_rate = 100 # Gbps (server to ToR)
+switch_link_rate = 400 # Gbps (switch-to-switch: ToR-Agg, Agg-Core)
 link_latency = 1000 # ns
 
 
@@ -36,35 +37,34 @@ i_core = n_server_total + n_tor_total + n_agg_total
 
 
 num_link = 0
-filename = "fat_k{}_{}G_OS{}.txt".format(k_fat, link_rate, oversubscript)
+filename = "fat_k{}_{}G_{}G_OS{}.txt".format(k_fat, host_link_rate, switch_link_rate, oversubscript)
 with open(filename, "w") as f:
 
+    # Server to ToR links (host links)
     for p in range(n_tor_total):
         for i in range(n_server_per_tor):
             id_server = p * n_server_per_tor + i
             id_tor = i_tor + p
-            # print("{} {} {}Gbps {}ns 0.000000".format(id_server, id_tor, link_rate, link_latency))
-            f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_server, id_tor, link_rate, link_latency))
+            f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_server, id_tor, host_link_rate, link_latency))
             num_link += 1
 
+    # ToR to Aggregator links (switch-to-switch)
     for i in range(n_pod):
         for j in range(n_tor_per_pod):
             for l in range(n_agg_per_pod):
                 id_tor = i_tor + i * n_tor_per_pod + j
                 id_agg = i_agg + i * n_tor_per_pod + l
-                # print("{} {} {}Gbps {}ns 0.000000".format(id_tor, id_agg, link_rate, link_latency))
-                f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_tor, id_agg, link_rate, link_latency))
+                f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_tor, id_agg, switch_link_rate, link_latency))
                 num_link += 1
 
-
+    # Aggregator to Core links (switch-to-switch)
     n_jump = int(k_fat / 2)
     for i in range(n_pod):
         for j in range(n_agg_per_pod):
             for l in range(int(k_fat / 2)):
                 id_agg = i_agg + i * n_agg_per_pod + j
                 id_core = i_core + j * n_jump + l
-                # print("{} {} {}Gbps {}ns 0.000000".format(id_agg, id_core, link_rate, link_latency))
-                f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_agg, id_core, link_rate, link_latency))
+                f.write("{} {} {}Gbps {}ns 0.000000\n".format(id_agg, id_core, switch_link_rate, link_latency))
                 num_link += 1
 
 def line_prepender(filename, line):
@@ -96,7 +96,7 @@ line_prepender(filename, "{} {} {}".format(num_total_node, num_total_switch, num
 
 
 
-filename_trace = "fat_k{}_trace.txt".format(k_fat, link_rate, oversubscript)
+filename_trace = "fat_k{}_trace.txt".format(k_fat)
 with open(filename_trace, "w") as f:
     f.write("{}\n".format(n_server_total))
 

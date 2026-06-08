@@ -152,6 +152,8 @@ def main():
                         flow_control = "IRN"
                     elif encoded_fc == (1, 0):
                         flow_control = "Lossless"
+                    elif encoded_fc == (1, 1):
+                        flow_control = "IRN-PFC"
                     else:
                         continue
                     topo = parsed_line[13]

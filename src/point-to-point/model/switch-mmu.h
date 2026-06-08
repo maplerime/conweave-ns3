@@ -76,6 +76,11 @@ class SwitchMmu : public Object {
     uint32_t GetIngressSP(uint32_t port, uint32_t pgIndex);
     uint32_t GetEgressSP(uint32_t port, uint32_t qIndex);
 
+    // Get actual ingress buffer occupancy for a specific port (all queues)
+    uint32_t GetIngressBufferBytes(uint32_t port);
+    // Get actual ingress buffer occupancy for a specific PG
+    uint32_t GetIngressPGBytes(uint32_t port, uint32_t qIndex);
+
     // config
     uint32_t node_id;
 

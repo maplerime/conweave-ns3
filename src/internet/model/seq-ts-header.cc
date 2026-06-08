@@ -31,7 +31,7 @@ namespace ns3 {
 NS_OBJECT_ENSURE_REGISTERED (SeqTsHeader);
 
 SeqTsHeader::SeqTsHeader ()
-  : m_seq (0)
+  : m_seq (0), m_tag (0), m_ecmp_counter (0)
 {
 	if (IntHeader::mode == 1)
 		ih.ts = Simulator::Now().GetTimeStep();
@@ -57,6 +57,28 @@ uint16_t
 SeqTsHeader::GetPG (void) const
 {
 	return m_pg;
+}
+
+void
+SeqTsHeader::SetTag (uint16_t tag)
+{
+	m_tag = tag;
+}
+uint16_t
+SeqTsHeader::GetTag (void) const
+{
+	return m_tag;
+}
+
+void
+SeqTsHeader::SetEcmpCounter (uint16_t ecmp_counter)
+{
+	m_ecmp_counter = ecmp_counter;
+}
+uint16_t
+SeqTsHeader::GetEcmpCounter (void) const
+{
+	return m_ecmp_counter;
 }
 
 Time
@@ -93,7 +115,7 @@ SeqTsHeader::GetSerializedSize (void) const
 	return GetHeaderSize();
 }
 uint32_t SeqTsHeader::GetHeaderSize(void){
-	return 6 + IntHeader::GetStaticSize();
+	return 10 + IntHeader::GetStaticSize();  // 4(seq) + 2(pg) + 2(tag) + 2(ecmp_counter) + IntHeader
 }
 
 void
@@ -102,6 +124,8 @@ SeqTsHeader::Serialize (Buffer::Iterator start) const
   Buffer::Iterator i = start;
   i.WriteHtonU32 (m_seq);
   i.WriteHtonU16 (m_pg);
+  i.WriteHtonU16 (m_tag);  // Write tag field
+  i.WriteHtonU16 (m_ecmp_counter);  // Write ecmp_counter field
 
   // write IntHeader
   ih.Serialize(i);
@@ -112,6 +136,8 @@ SeqTsHeader::Deserialize (Buffer::Iterator start)
   Buffer::Iterator i = start;
   m_seq = i.ReadNtohU32 ();
   m_pg =  i.ReadNtohU16 ();
+  m_tag = i.ReadNtohU16 ();  // Read tag field
+  m_ecmp_counter = i.ReadNtohU16 ();  // Read ecmp_counter field
 
   // read IntHeader
   ih.Deserialize(i);

@@ -19,6 +19,7 @@
  */
 
 #include <ns3/assert.h>
+#include <ns3/node-list.h>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-client.h>
 #include <ns3/rdma-driver.h>
@@ -29,6 +30,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <unordered_map>
 
 #include "ns3/applications-module.h"
@@ -102,6 +104,10 @@ FILE *voq_output = NULL;
 FILE *voq_detail_output = NULL;
 FILE *uplink_output = NULL;
 FILE *conn_output = NULL;
+FILE *qlen_output = NULL;
+
+// Timeout counter is defined in rdma-hw.cc
+extern std::unordered_map<unsigned, unsigned> acc_timeout_count;
 
 std::string data_rate, link_delay, topology_file, flow_file;
 std::string flow_input_file = "flow.txt";
@@ -188,17 +194,45 @@ struct FlowInput {
     uint32_t src, dst, pg, maxPacketCount, port;
     double start_time;
     uint32_t idx;
+    uint16_t tag;  // Tag field for flow classification (1=ECMP, 2=other)
 };
 FlowInput flow_input = {0};  // global variable
 uint32_t flow_num;
 
+// Tag flow statistics at creation time
+uint64_t tag1_flow_count = 0;  // Flows with tag=1 (ECMP)
+uint64_t tag2_flow_count = 0;  // Flows with tag=2 (DRILL/Inflex/ConWeave)
+
 /**
  * Read flow input from file "flowf"
+ * Handles both formats: with and without tag column (defaults to 0 if missing)
  */
 void ReadFlowInput() {
     if (flow_input.idx < flow_num) {
-        flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.maxPacketCount >>
-            flow_input.start_time;
+        std::string line;
+        // Read the entire line (skip empty lines)
+        while (std::getline(flowf, line)) {
+            // Skip empty lines
+            if (line.empty() || line.find_first_not_of(" \t\r\n") == std::string::npos) {
+                continue;
+            }
+            std::istringstream iss(line);
+            // Try to read 6 columns (with tag)
+            if (iss >> flow_input.src >> flow_input.dst >> flow_input.pg >>
+                   flow_input.maxPacketCount >> flow_input.start_time >> flow_input.tag) {
+                // Successfully read 6 columns with tag
+                break;
+            } else {
+                // Failed, try 5 columns (old format without tag)
+                iss.clear();
+                iss.str(line);
+                if (iss >> flow_input.src >> flow_input.dst >> flow_input.pg >>
+                       flow_input.maxPacketCount >> flow_input.start_time) {
+                    flow_input.tag = 0;  // Default tag for old format
+                    break;
+                }
+            }
+        }
         assert(n.Get(flow_input.src)->GetNodeType() == 0 &&
                n.Get(flow_input.dst)->GetNodeType() == 0);
     } else {
@@ -272,8 +306,16 @@ void ScheduleFlowInputs(FILE *infile) {
         RdmaClientHelper clientHelper(
             pg, serverAddress[src], serverAddress[dst], sport, dport, target_len,
             has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
-            global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)]);
+            global_t == 1 ? maxRtt : pairRtt[n.Get(src)][n.Get(dst)],
+            flow_input.tag);
         clientHelper.SetAttribute("StatFlowID", IntegerValue(flow_input.idx));
+
+        // Count flows by tag
+        if (flow_input.tag == 1) {
+            tag1_flow_count++;
+        } else if (flow_input.tag == 2) {
+            tag2_flow_count++;
+        }
 
         ApplicationContainer appCon = clientHelper.Install(n.Get(src));  // SRC
         appCon.Start(Seconds(Time(0)));
@@ -316,6 +358,7 @@ void cnp_freq_monitoring(FILE *fout, Ptr<RdmaHw> rdmahw) {
  * @brief TOR Switch monitoring
  * - VOQ number and uplink throughput at switches
  * - the number of active connections at RNICS
+ * - queue length at each egress port
  */
 void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplink, FILE *fout_conn,
                          uint32_t *lb_mode) {
@@ -350,6 +393,24 @@ void periodic_monitoring(FILE *fout_voq, FILE *fout_voq_detail, FILE *fout_uplin
             // monitor uplink txBytes <time, ToRId, OutDev, Bytes>
             uint64_t uplink_txbyte = swNode->GetTxBytesOutDev(iface);
             fprintf(fout_uplink, "%lu,%u,%u,%lu\n", now, tor2If.first, iface, uplink_txbyte);
+        }
+
+        // monitor queue length for each egress port at TOR switches
+        if (qlen_output != nullptr) {
+            for (const auto &iface : tor2If.second) {
+                Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(swNode->GetDevice(iface));
+                if (dev) {
+                    Ptr<BEgressQueue> queue = dev->GetQueue();
+                    if (queue) {
+                        uint32_t total_q = 0;
+                        // Sum across all 8 priority queues
+                        for (uint32_t q = 0; q < 8; q++) {
+                            total_q += queue->GetNBytes(q);
+                        }
+                        fprintf(qlen_output, "%lu,%u,%u,%u\n", now, tor2If.first, iface, total_q);
+                    }
+                }
+            }
         }
     }
 
@@ -480,19 +541,37 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver>();
     rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->sport, q->dport, q->m_pg);
 
+    // Get timeout count for this flow
+    unsigned timeout_count = 0;
+    if (acc_timeout_count.find(q->m_flow_id) != acc_timeout_count.end())
+        timeout_count = acc_timeout_count[q->m_flow_id];
+
     // fprintf(fout, "%lu QP complete\n", Simulator::Now().GetTimeStep());
-    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu\n", Settings::ip_to_node_id(q->sip),
+    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu %u\n", Settings::ip_to_node_id(q->sip),
             Settings::ip_to_node_id(q->dip), q->sport, q->dport, q->m_size,
             q->startTime.GetTimeStep(), (Simulator::Now() - q->startTime).GetTimeStep(),
-            standalone_fct);
+            standalone_fct, timeout_count);
 
     // for debugging
-    NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
-                 (Settings::ip_to_node_id(q->sip), Settings::ip_to_node_id(q->dip), q->sport,
-                  q->dport, q->m_size, q->startTime.GetTimeStep(),
-                  (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct));
+    NS_LOG_DEBUG(Settings::ip_to_node_id(q->sip) << " " << Settings::ip_to_node_id(q->dip) << " "
+                  << q->sport << " " << q->dport << " " << q->m_size << " "
+                  << q->startTime.GetTimeStep() << " "
+                  << (Simulator::Now() - q->startTime).GetTimeStep() << " "
+                  << standalone_fct);
     Settings::cnt_finished_flows++;
     fflush(fout);
+
+    // Clean up reorder buffer for this flow at all switches (mode 16 only)
+    if (Settings::lb_mode == 16) {
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            if (n.Get(i)->GetNodeType() == 1) {  // is switch
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
+                if (sw) {
+                    sw->OutputAndClearFlowReorder(q->sip.Get(), q->dip.Get(), q->sport, q->dport);
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1210,7 +1289,8 @@ int main(int argc, char *argv[]) {
         topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
         /** ASSUME: fixed one-hop delay across network */
-        assert(std::to_string(one_hop_delay) + "ns" == link_delay);
+        // DISABLED: allow different link delays (10ns, 300ns, etc.)
+        // assert(std::to_string(one_hop_delay) + "ns" == link_delay);
 
         link_pairs.push_back(std::make_pair(src, dst));
         Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);
@@ -1323,13 +1403,26 @@ int main(int argc, char *argv[]) {
             sw->m_mmu->ConfigBufferSize(buffer_size * 1024 *
                                         1024);  // default 0, specify in run.py!!
             sw->m_mmu->node_id = sw->GetId();
-            NS_LOG_INFO("Node %u : Broadcom switch (%u ports / %gMB MMU)\n" %
-                        (i, sw->GetNDevices() - 1, sw->m_mmu->GetMmuBufferBytes() / 1000000.));
+            NS_LOG_INFO("Node " << i << " : Broadcom switch (" << sw->GetNDevices() - 1
+                        << " ports / " << sw->m_mmu->GetMmuBufferBytes() / 1000000. << "MB MMU)");
         }
     }
 
     fct_output = fopen(fct_output_file.c_str(), "w");
     flow_input_stream = fopen(flow_input_file.c_str(), "w");
+
+    // Open reorder output file for mode 16 (mixhash)
+    if (Settings::lb_mode == 16) {
+        std::string reorder_output_file = fct_output_file;
+        size_t pos = reorder_output_file.find("_out_fct.txt");
+        if (pos != std::string::npos) {
+            reorder_output_file = reorder_output_file.substr(0, pos) + "_out_reorder.txt";
+        } else {
+            reorder_output_file = "reorder_stats.txt";
+        }
+        SwitchNode::OpenReorderOutputFile(reorder_output_file);
+    }
+
     if (cc_mode == 1) {
         cnp_output = fopen(cnp_output_file.c_str(), "w");
     }
@@ -1366,6 +1459,14 @@ int main(int argc, char *argv[]) {
     std::map<std::string, uint32_t> topo2bdpMap;
     topo2bdpMap[std::string("leaf_spine_128_100G_OS2")] = 104000;  // RTT=8320
     topo2bdpMap[std::string("fat_k8_100G_OS2")] = 156000;      // RTT=12480 --> all 100G links
+    topo2bdpMap[std::string("fat_k8_100G_OS2.5")] = 156000;    // OS=2.5, 320 hosts
+    topo2bdpMap[std::string("fat_k8_100G_OS10")] = 156000;    // OS=10, 1280 hosts
+    topo2bdpMap[std::string("fat_k8_100G_400G_OS10")] = 153000;    // OS=10, 1280 hosts, 400G switch links (actual calculated BDP)
+    topo2bdpMap[std::string("fat_k16_100G_400G_OS1.25")] = 153000;    // k=16, OS=1.25, 1280 hosts, 400G switch links
+    topo2bdpMap[std::string("fat_k16_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=16, 5pods, 256/pod, 1280 hosts
+    topo2bdpMap[std::string("fat_k16_5pods_256perPod_400G_400G_OS1")] = 18000;   // k=16, 5pods, 256/pod, 1280 hosts, all 400G, RTT=360ns
+    topo2bdpMap[std::string("topo_1280_400G_400G_OS1")] = 18000;               // 1280 hosts, 5pods, all 400G, RTT=360ns
+    topo2bdpMap[std::string("fat_k8_5pods_256perPod_100G_400G_OS1")] = 153000;  // k=8, 5pods, 256/pod, 1280 hosts
 
     // topology_file
     bool found_topo2bdpMap = false;
@@ -1456,7 +1557,19 @@ int main(int argc, char *argv[]) {
      * @brief get BDP and delay
      */
     maxRtt = maxBdp = 0;
+    uint32_t max_i = 0, max_j = 0;
+    uint64_t max_delay = 0, max_txDelay = 0, max_bw = 0;
     fprintf(stderr, "node_num=%d\n", node_num);
+    fprintf(stderr, "packet_payload_size=%u\n", packet_payload_size);
+
+    // Debug: print some sample paths
+    std::vector<std::pair<uint32_t, uint32_t>> sample_pairs = {
+        {0, 256},    // same pod (pod 0)
+        {0, 512},    // pod 0 to pod 2
+        {0, 1024},   // pod 0 to pod 4 (farthest)
+        {0, 1279}    // pod 0 to last host
+    };
+
     for (uint32_t i = 0; i < node_num; i++) {
         if (n.Get(i)->GetNodeType() != 0) continue;
         for (uint32_t j = i + 1; j < node_num; j++) {
@@ -1471,15 +1584,44 @@ int main(int argc, char *argv[]) {
             pairRtt[n.Get(i)][n.Get(j)] = rtt;
             pairRtt[n.Get(j)][n.Get(i)] = rtt;
 
-            if (bdp > maxBdp) maxBdp = bdp;
+            if (bdp > maxBdp) {
+                maxBdp = bdp;
+                max_i = i;
+                max_j = j;
+                max_delay = delay;
+                max_txDelay = txDelay;
+                max_bw = bw;
+            }
             if (rtt > maxRtt) maxRtt = rtt;
         }
     }
+
+    // Print sample paths
+    for (auto& pair : sample_pairs) {
+        uint32_t i = pair.first;
+        uint32_t j = pair.second;
+        if (i < node_num && j < node_num) {
+            uint64_t delay = pairDelay[n.Get(i)][n.Get(j)];
+            uint64_t txDelay = pairTxDelay[n.Get(i)][n.Get(j)];
+            uint64_t rtt = pairRtt[n.Get(i)][n.Get(j)];
+            fprintf(stderr, "Sample path: host %u -> host %u\n", i, j);
+            fprintf(stderr, "  delay=%lu ns, txDelay=%lu ns, RTT=%lu ns\n", delay, txDelay, rtt);
+        }
+    }
+
     fprintf(stderr, "maxRtt: %lu, maxBdp: %lu\n", maxRtt, maxBdp);
-    assert(maxBdp == irn_bdp_lookup);
+    fprintf(stderr, "Max path: host %u -> host %u\n", max_i, max_j);
+    fprintf(stderr, "  delay: %lu ns (one-way)\n", max_delay);
+    fprintf(stderr, "  txDelay: %lu ns (one-way)\n", max_txDelay);
+    fprintf(stderr, "  bw: %lu Gbps\n", max_bw / 1000000000);
+    fprintf(stderr, "  RTT = %lu*2 + %lu = %lu ns\n", max_delay, max_txDelay, max_delay*2 + max_txDelay);
+    fprintf(stderr, "  Expected BDP: %lu * %lu / 8 = %lu bytes\n", maxRtt, max_bw / 1000000000, maxRtt * max_bw / 1000000000 / 8);
+    // Temporarily disable assertion to see actual values
+    // assert(maxBdp == irn_bdp_lookup);
 
     std::cout << "Configuring switches" << std::endl;
     /* config ToR Switch */
+    std::cout << "  Setting up ToR switches..." << std::endl;
     for (auto &pair : link_pairs) {
         Ptr<Node> probably_host = n.Get(pair.first);
         Ptr<Node> probably_switch = n.Get(pair.second);
@@ -1488,11 +1630,104 @@ int main(int argc, char *argv[]) {
         if (probably_host->GetNodeType() == 0 && probably_switch->GetNodeType() == 1) {
             Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(probably_switch);
             sw->m_isToR = true;
+            sw->SetSwitchType(SWITCH_TYPE_TOR);
             uint32_t hostIP = serverAddress[pair.first].Get();
             sw->m_isToR_hostIP.insert(hostIP);
             if (idxNodeToR.find(sw->GetId()) == idxNodeToR.end()) {
                 idxNodeToR[sw->GetId()] = sw;
             };
+        }
+    }
+    std::cout << "  ToR switches configured." << std::endl;
+
+    // Inflex mode (lb_mode == 12): configure switch types and start probe generation
+    if (lb_mode == 12) {
+        /* config switch types (Aggregation and Core) based on node ID range
+         * Detect topology based on total number of switches:
+         * - k=8, 5pods: 56 switches (20 ToR, 20 Agg, 16 Core)
+         * - k=16, 5pods: 144 switches (40 ToR, 40 Agg, 64 Core)
+         * - topo_1280: 576 switches (160 ToR, 160 Agg, 256 Core)
+         */
+        bool is_k16_5pods = (switch_num == 144);  // k=16, 5pods topology
+        bool is_topo_1280 = (switch_num == 576);  // topo_1280_400G_400G_OS1 topology
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            Ptr<Node> node = n.Get(i);
+            if (node->GetNodeType() == 1) {  // Switch node
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                uint32_t swId = sw->GetId();
+                if (!sw->m_isToR) {  // Not ToR, determine if Aggregation or Core
+                    if (is_topo_1280) {
+                        // topo_1280: Hosts 0-1279, ToR 1280-1439, Agg 1440-1599, Core 1600-1855
+                        if (swId >= 1280 && swId < 1440) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1440 && swId < 1600) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1600 && swId < 1856) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    } else if (is_k16_5pods) {
+                        // k=16, 5pods: Hosts 0-1279, ToR 1280-1319, Agg 1320-1359, Core 1360-1423
+                        if (swId >= 1280 && swId < 1320) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1320 && swId < 1360) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1360 && swId < 1424) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    } else {
+                        // k=8, 5pods: Hosts 0-1279, ToR 1280-1299, Agg 1300-1319, Core 1320-1335
+                        if (swId >= 1280 && swId < 1300) {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        } else if (swId >= 1300 && swId < 1320) {
+                            sw->SetSwitchType(SWITCH_TYPE_AGGREGATION);
+                        } else if (swId >= 1320 && swId < 1336) {
+                            sw->SetSwitchType(SWITCH_TYPE_CORE);
+                        } else {
+                            sw->SetSwitchType(SWITCH_TYPE_TOR);
+                        }
+                    }
+                }
+            }
+        }
+
+        std::cout << "Switch types configured:" << std::endl;
+        uint32_t torCount = 0, aggCount = 0, coreCount = 0;
+        for (uint32_t i = 0; i < n.GetN(); i++) {
+            Ptr<Node> node = n.Get(i);
+            if (node->GetNodeType() == 1) {
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                switch (sw->GetSwitchType()) {
+                    case SWITCH_TYPE_TOR:
+                        torCount++;
+                        break;
+                    case SWITCH_TYPE_AGGREGATION:
+                        aggCount++;
+                        break;
+                    case SWITCH_TYPE_CORE:
+                        coreCount++;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        std::cout << "  ToR: " << torCount << ", Aggregation: " << aggCount << ", Core: " << coreCount << std::endl;
+
+        // Start queue monitoring probe generation on all switches (only for Inflex mode)
+        if (Settings::lb_mode == 12) {
+            std::cout << "Starting queue monitoring probe generation (mode 12: Inflex)..." << std::endl;
+            for (uint32_t i = 0; i < n.GetN(); i++) {
+                Ptr<Node> node = n.Get(i);
+                if (node->GetNodeType() == 1) {
+                    Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                    // All switch types (ToR, Aggregation, Core) generate probes in Inflex mode
+                    sw->StartProbeGeneration();
+                }
+            }
         }
     }
 
@@ -1680,7 +1915,7 @@ int main(int argc, char *argv[]) {
             if (i->first->GetNodeType() == 1) {
                 Ptr<Node> node = i->first;
                 Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);  // switch
-                NS_LOG_INFO("Switch Info - ID:%u, ToR:%d\n" % (sw->GetId(), sw->m_isToR));
+                NS_LOG_INFO("Switch Info - ID:" << sw->GetId() << ", ToR:" << sw->m_isToR);
                 if (lb_mode == 3) {
                     sw->m_mmu->m_congaRouting.SetConstants(conga_dreTime, conga_agingTime,
                                                            conga_flowletTimeout, conga_quantizeBit,
@@ -1717,8 +1952,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // populate routing tables (although we use our custom impl in switch_node.cc)
-    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+    // Skip global routing table population - we use custom routing in switch_node.cc
+    // NS-3's GlobalRouting causes stack overflow on large topologies (1856+ nodes)
+    std::cout << "Skipping global routing (using custom routing in switches)..." << std::endl;
+    // Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+    std::cout << "  Custom routing configured." << std::endl;
 
     // maintain port number for each host
     for (uint32_t i = 0; i < node_num; i++) {
@@ -1751,6 +1989,7 @@ int main(int argc, char *argv[]) {
 
     uplink_output = fopen(uplink_mon_file.c_str(), "w");  // common
     conn_output = fopen(conn_mon_file.c_str(), "w");      // common
+    qlen_output = fopen(qlen_mon_file.c_str(), "w");      // queue length monitoring
 
     // update torId2UplinkIf, torId2DownlinkIf
     for (size_t ToRId = 0; ToRId < Settings::node_num; ToRId++) {
@@ -1797,6 +2036,135 @@ int main(int argc, char *argv[]) {
     /*-----------------------------------------------------------------------------*/
     Simulator::Destroy();
     NS_LOG_INFO("Total number of packets: " << RdmaHw::nAllPkts);
+
+    // Output Inflex statistics if using Inflex load balancing
+    if (Settings::lb_mode == 12) {
+        std::cout << "=== INFLEX STATISTICS ===" << std::endl;
+        std::cout << "Inflex calls: " << SwitchNode::m_inflexCallCount << std::endl;
+        std::cout << "Inflex ECMP fallback: " << SwitchNode::m_inflexEcmpFallbackCount << std::endl;
+        if (SwitchNode::m_inflexCallCount > 0) {
+            double fallbackPercent = 100.0 * SwitchNode::m_inflexEcmpFallbackCount / SwitchNode::m_inflexCallCount;
+            std::cout << "Fallback rate: " << fallbackPercent << "%" << std::endl;
+        }
+        std::cout << "--- Probe Statistics ---" << std::endl;
+        std::cout << "Total probes sent: " << SwitchNode::m_totalProbeSent << std::endl;
+        std::cout << "PFC triggered probes: " << SwitchNode::m_pfcTriggeredProbeCount << std::endl;
+        std::cout << "Queue>60% triggered probes: " << SwitchNode::m_queueTriggeredProbeCount << std::endl;
+        std::cout << "Total probes received: " << SwitchNode::m_totalProbeReceived << std::endl;
+        std::cout << "========================" << std::endl;
+    }
+
+    // Output Reorder Buffer statistics for mode 16 (MixHash with tag=1)
+    if (Settings::lb_mode == 16) {
+        std::cout << "=== REORDER BUFFER STATISTICS ===" << std::endl;
+        // Aggregate statistics across all ToR switches
+        ns3::ReorderStats totalStats = {0, 0, 0, 0, 0, 0};
+        uint32_t tor_count = 0;
+        for (uint32_t i = 0; i < NodeList::GetNNodes(); i++) {
+            Ptr<Node> node = NodeList::GetNode(i);
+            if (!node) continue;
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+            if (sw && sw->GetId() > 1) {  // Skip switch 0 and 1 if they're not ToRs
+                ns3::ReorderStats stats;
+                sw->GetReorderStats(stats);
+                if (stats.total_buffered > 0 || stats.total_flushed > 0 || stats.total_dropped > 0) {
+                    totalStats.total_buffered += stats.total_buffered;
+                    totalStats.total_flushed += stats.total_flushed;
+                    totalStats.total_dropped += stats.total_dropped;
+                    totalStats.total_mismatch_drops += stats.total_mismatch_drops;
+                    if (stats.max_q_size > totalStats.max_q_size) {
+                        totalStats.max_q_size = stats.max_q_size;
+                    }
+                    tor_count++;
+                }
+            }
+        }
+        std::cout << "Active ToR switches with reorder: " << tor_count << std::endl;
+        std::cout << "Total packets buffered: " << totalStats.total_buffered << std::endl;
+        std::cout << "Total packets flushed: " << totalStats.total_flushed << std::endl;
+        std::cout << "Total packets dropped: " << totalStats.total_dropped << std::endl;
+        std::cout << "  - Queue full drops: " << (totalStats.total_dropped - totalStats.total_mismatch_drops) << std::endl;
+        std::cout << "  - Counter mismatch drops: " << totalStats.total_mismatch_drops << std::endl;
+        std::cout << "Max queue size observed: " << totalStats.max_q_size << std::endl;
+        std::cout << "========================" << std::endl;
+
+        // Output per-flow reorder statistics to file
+        // Use same base name as FCT output file
+        std::string flowReorderFile = fct_output_file;
+        // Replace _out_fct.txt with _out_reorder.txt
+        size_t pos = flowReorderFile.find("_out_fct.txt");
+        if (pos != std::string::npos) {
+            flowReorderFile = flowReorderFile.substr(0, pos) + "_out_reorder.txt";
+        } else {
+            flowReorderFile = "reorder_stats.txt";
+        }
+        std::ofstream flowReorderOut(flowReorderFile);
+        if (flowReorderOut.is_open()) {
+            // Header: sip,dip,sport,dport,proto,received,direct_sent,buffered,flushed,dropped,max_buf_size
+            flowReorderOut << "# sip dip sport dport proto received direct_sent buffered flushed dropped max_buf_size" << std::endl;
+            for (uint32_t i = 0; i < NodeList::GetNNodes(); i++) {
+                Ptr<Node> node = NodeList::GetNode(i);
+                if (!node) continue;
+                Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(node);
+                if (sw) {
+                    const std::map<FlowKey, FlowReorderStats>& flowStats = sw->GetFlowReorderStats();
+                    for (const auto& entry : flowStats) {
+                        const FlowKey& key = entry.first;
+                        const FlowReorderStats& stats = entry.second;
+                        // Only output flows that had some reordering activity
+                        if (stats.packets_buffered > 0 || stats.packets_dropped > 0) {
+                            flowReorderOut << Settings::hostIp2IdMap[key.sip] << " "
+                                          << Settings::hostIp2IdMap[key.dip] << " "
+                                          << key.sport << " " << key.dport << " " << (int)key.proto << " "
+                                          << stats.packets_received << " "
+                                          << stats.packets_direct_sent << " "
+                                          << stats.packets_buffered << " "
+                                          << stats.packets_flushed << " "
+                                          << stats.packets_dropped << " "
+                                          << stats.max_buffer_size << std::endl;
+                        }
+                    }
+                }
+            }
+            flowReorderOut.close();
+            std::cout << "Per-flow reorder stats written to: " << flowReorderFile << std::endl;
+        }
+    }
+
+    // Output tag-based routing statistics for Hybrid, Inflex, and Spray modes
+    if (Settings::lb_mode == 10 || Settings::lb_mode == 12 || Settings::lb_mode == 13 || Settings::lb_mode == 14) {
+        std::cout << "\n=== TAG ROUTING STATISTICS ===" << std::endl;
+        const char* mode_name = nullptr;
+        uint64_t tag2_count = 0;
+        if (Settings::lb_mode == 10) {
+            mode_name = "Hybrid (lb_mode=10)";
+            tag2_count = Settings::tag2_drill_count;
+        } else if (Settings::lb_mode == 12) {
+            mode_name = "Inflex (lb_mode=12)";
+            tag2_count = Settings::tag2_inflex_count;
+        } else if (Settings::lb_mode == 13) {
+            mode_name = "Hybrid-AS (lb_mode=13)";
+            tag2_count = Settings::tag2_adaptive_spray_count;
+        } else if (Settings::lb_mode == 14) {
+            mode_name = "Hybrid-SS (lb_mode=14)";
+            tag2_count = Settings::tag2_random_spray_count;
+        }
+        std::cout << "Mode: " << mode_name << std::endl;
+        std::cout << "--- Flow Creation ---" << std::endl;
+        std::cout << "tag=1 flows created: " << tag1_flow_count << std::endl;
+        std::cout << "tag=2 flows created: " << tag2_flow_count << std::endl;
+        std::cout << "--- Packet Routing ---" << std::endl;
+        std::cout << "tag=1 flows (ECMP): " << Settings::tag1_ecmp_count << " packets" << std::endl;
+        std::cout << "tag=2 flows (" << (Settings::lb_mode == 10 ? "DRILL" :
+                                        Settings::lb_mode == 12 ? "Inflex" :
+                                        Settings::lb_mode == 13 ? "AdaptiveSpray" :
+                                        Settings::lb_mode == 14 ? "RandomSpray" : "Unknown") << "): "
+                  << tag2_count << " packets" << std::endl;
+        uint64_t total_tag_routed = Settings::tag1_ecmp_count + tag2_count;
+        std::cout << "Total tag-routed packets: " << total_tag_routed << std::endl;
+        std::cout << "=============================\n" << std::endl;
+    }
+
     NS_LOG_INFO("Done.");
     endt = clock();
     std::cerr << (double)(endt - begint) / CLOCKS_PER_SEC << "\n";

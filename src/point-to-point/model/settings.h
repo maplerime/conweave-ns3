@@ -36,6 +36,12 @@ namespace ns3 {
 
 #define SLB_DEBUG (false)
 
+// Debug flag for tag-based routing (Hybrid, Inflex, ECMP-Conweave modes)
+#define DEBUG_TAG_ROUTING (false)
+
+// Debug flag for detailed flow tracking through switches
+#define DEBUG_FLOW_TRACKING (false)
+
 #define PARSE_FIVE_TUPLE(ch)                                                    \
     DEPARSE_FIVE_TUPLE(std::to_string(Settings::hostIp2IdMap[ch.sip]),          \
                        std::to_string(ch.udp.sport),                            \
@@ -118,7 +124,9 @@ class Settings {
     static const uint32_t CONWEAVE_CTRL_DUMMY_INDEV = 88888888;  // just arbitrary
 
     /* load balancer */
-    // 0: flow ECMP, 2: DRILL, 3: Conga, 4: ConWeave
+    // 0: flow ECMP, 2: DRILL, 3: Conga, 6: Letflow, 9: ConWeave, 10: Hybrid, 12: Inflex
+    // 13: Hybrid-AS (Adaptive Spray for tag=2, ECMP for tag=1)
+    // 14: Hybrid-SS (Random Spray for tag=2, ECMP for tag=1)
     static uint32_t lb_mode;
 
     // for common setting
@@ -137,6 +145,18 @@ class Settings {
 
     static uint32_t dropped_pkt_sw_ingress;
     static uint32_t dropped_pkt_sw_egress;
+
+    /* Tag routing statistics - for Hybrid/Inflex/Spray mode verification */
+    static uint64_t tag1_ecmp_count;          // tag=1 flows using ECMP
+    static uint64_t tag2_inflex_count;        // tag=2 flows using Inflex
+    static uint64_t tag2_drill_count;         // tag=2 flows using DRILL
+    static uint64_t tag2_compare_count;       // tag=2 flows using CompareWithInPort
+    static uint64_t tag2_adaptive_spray_count; // tag=2 flows using Adaptive Spray
+    static uint64_t tag2_random_spray_count;   // tag=2 flows using Random Spray
+
+    /* Reorder buffer settings for mode 16 (MixHash) */
+    static uint32_t reorder_queue_num;        // Number of reorder queues (default 4)
+    static const uint32_t REORDER_MAX_QUEUE_SIZE = 8;  // Max size per reorder queue
 };
 
 }  // namespace ns3

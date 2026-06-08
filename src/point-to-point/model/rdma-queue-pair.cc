@@ -91,6 +91,8 @@ void RdmaQueuePair::SetFlowId(int32_t v) {
 
 void RdmaQueuePair::SetTimeout(Time v) { m_timeout = v; }
 
+void RdmaQueuePair::SetTag(uint16_t tag) { m_tag = tag; }
+
 uint64_t RdmaQueuePair::GetBytesLeft() {
     if (irn.m_enabled) {
         uint32_t sack_seq, sack_sz;

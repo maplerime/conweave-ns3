@@ -107,6 +107,8 @@ public:
 		  // SeqTsHeader
 		  uint16_t pg;
 		  uint32_t seq;
+		  uint16_t tag;  // Tag field for flow classification
+		  uint16_t ecmp_counter;  // ECMP counter for hash variation
 		  IntHeader ih;
 	  } udp;
 	  // CnHeader

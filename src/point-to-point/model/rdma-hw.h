@@ -64,10 +64,10 @@ class RdmaHw : public Object {
 
     void AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip,
                       uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt,
-                      int32_t flow_id);  // add a nw qp (new send)
+                      int32_t flow_id, uint16_t tag = 0);  // add a nw qp (new send)
     void AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip,
                       uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt) {
-        this->AddQueuePair(size, pg, _sip, _dip, _sport, _dport, win, baseRtt, -1);
+        this->AddQueuePair(size, pg, _sip, _dip, _sport, _dport, win, baseRtt, -1, 0);
     }
 
     /* RxQueuePair */
@@ -86,7 +86,7 @@ class RdmaHw : public Object {
                           // packets. Only NIC can call this function. And do not call this upon PFC
 
     void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
-    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp);
+    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp, uint16_t tag);
     void AddHeader(Ptr<Packet> p, uint16_t protocolNumber);
     static uint16_t EtherToPpp(uint16_t protocol);
 

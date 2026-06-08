@@ -73,8 +73,9 @@ void SwitchMmu::InitSwitch(void) {
                                                     // static thresholds anymore
         m_port_max_shared_cell = m_maxBufferBytes;
     } else {
-        m_pg_shared_limit_cell = 20 * MTU;    // max buffer for an ingress pg
-        m_port_max_shared_cell = 4800 * MTU;  // max buffer for an ingress port
+        // Static PFC thresholds: 600KB pause, 400KB resume
+        m_pg_shared_limit_cell = 600 * 1024;   // 600KB - pause threshold per PG
+        m_port_max_shared_cell = 4800 * MTU;   // max buffer for an ingress port
     }
 
     for (uint32_t i = 0; i < pCnt; i++)  // port 0 is not used
@@ -108,8 +109,9 @@ void SwitchMmu::InitSwitch(void) {
         (m_activePortCnt)*std::max(qCnt * m_pg_min_cell,
                                    m_port_min_cell);  // 12000 * MTU; //ingress sp buffer threshold
     // still needs reset limits..
-    m_port_min_cell_off = 4700 * MTU;
-    m_pg_shared_limit_cell_off = m_pg_shared_limit_cell - 2 * MTU;
+    // Static PFC resume thresholds: 400KB
+    m_port_min_cell_off = 400 * 1024;          // 400KB - port-level resume threshold
+    m_pg_shared_limit_cell_off = 400 * 1024;   // 400KB - PG-level resume threshold
 
     // egress params
     m_op_buffer_shared_limit_cell =
@@ -210,6 +212,15 @@ void SwitchMmu::UpdateIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t 
     m_usedIngressSPBytes[GetIngressSP(port, qIndex)] += psize;
     m_usedIngressPortBytes[port] += psize;
     m_usedIngressPGBytes[port][qIndex] += psize;
+
+    // Debug: track ingress buffer updates
+    static int ingressUpdateCount = 0;
+    if (ingressUpdateCount < 5 && qIndex > 0) {
+        std::cout << "[Ingress Update] port=" << port << " qIndex=" << qIndex
+                  << " psize=" << psize << " m_usedIngressPGBytes[port][qIndex]="
+                  << m_usedIngressPGBytes[port][qIndex] << std::endl;
+        ingressUpdateCount++;
+    }
     if (m_usedIngressSPBytes[GetIngressSP(port, qIndex)] >
         m_buffer_cell_limit_sp)  // begin to use headroom buffer
     {
@@ -273,6 +284,15 @@ void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint3
     m_usedIngressSPBytes[GetIngressSP(port, qIndex)] -= psize;
     m_usedIngressPortBytes[port] -= psize;
     m_usedIngressPGBytes[port][qIndex] -= psize;
+
+    // Debug: track ingress buffer removal
+    static int ingressRemoveCount = 0;
+    if (ingressRemoveCount < 5 && qIndex > 0) {
+        std::cout << "[Ingress Remove] port=" << port << " qIndex=" << qIndex
+                  << " psize=" << psize << " m_usedIngressPGBytes[port][qIndex]="
+                  << m_usedIngressPGBytes[port][qIndex] << std::endl;
+        ingressRemoveCount++;
+    }
     if ((double)m_usedIngressPGHeadroomBytes[port][qIndex] - psize > 0)
         m_usedIngressPGHeadroomBytes[port][qIndex] -= psize;
     else
@@ -393,6 +413,26 @@ uint32_t SwitchMmu::GetEgressSP(uint32_t port, uint32_t qIndex) {
         return 0;
     else
         return 1;
+}
+
+uint32_t SwitchMmu::GetIngressBufferBytes(uint32_t port) {
+    if (port >= pCnt) {
+        return 0;
+    }
+    // Return total ingress buffer usage for this port across all priority groups
+    uint32_t totalBytes = 0;
+    for (uint32_t q = 0; q < qCnt; q++) {
+        totalBytes += m_usedIngressPGBytes[port][q];
+    }
+    return totalBytes;
+}
+
+uint32_t SwitchMmu::GetIngressPGBytes(uint32_t port, uint32_t qIndex) {
+    if (port >= pCnt || qIndex >= qCnt) {
+        return 0;
+    }
+    // Return ingress buffer usage for a specific priority group
+    return m_usedIngressPGBytes[port][qIndex];
 }
 
 bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {

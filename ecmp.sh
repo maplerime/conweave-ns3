@@ -96,10 +96,10 @@ run_simulation() {
     cecho "YELLOW" "Running: $name, flow: $flow_file"
 
     # Run simulation in background
-    if [ "$lb_mode" = "hybrid" ]; then
-        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
-    else
+    if [ "$lb_mode" = "fecmp" ]; then
         python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file 2>&1 > /dev/null &
+    else
+        python3 run.py --lb $lb_mode --pfc 1 --irn 1 --simul_time ${RUNTIME} --netload ${NETLOAD} --topo ${TOPOLOGY} --bw ${BANDWIDTH} --flow_file $flow_file --fecmp_bg $fecmp_bg 2>&1 > /dev/null &
     fi
     local sim_pid=$!
 
@@ -127,13 +127,26 @@ run_simulation() {
     # MONITOR_PIDS+=($mon_pid)  # DISABLED: Auto-stop commented out
 }
 
-# ========== Pure ECMP mode ==========
+# ========== Hybrid mode with different fecmp_bg levels ==========
 cecho "GREEN" "\n=========================================="
-cecho "GREEN" "Run Pure ECMP experiment"
+cecho "GREEN" "Run Hybrid experiments"
 cecho "GREEN" "=========================================="
-FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+
+# fecmp_bg = 0
+FLOW_FILE="moe_1280group_256to8_8round_8KB.txt"
 run_simulation "fecmp" "0" "$FLOW_FILE"
-run_simulation "necmp" "0" "$FLOW_FILE"
+
+# fecmp_bg = 64
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_64fecmp.txt"
+run_simulation "fecmp" "64" "$FLOW_FILE"
+
+# fecmp_bg = 128
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_128fecmp.txt"
+run_simulation "fecmp" "128" "$FLOW_FILE"
+
+# fecmp_bg = 192 (all fecmp)
+FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
+run_simulation "fecmp" "192" "$FLOW_FILE"
 
 # Kill any remaining monitor processes
 cleanup() {

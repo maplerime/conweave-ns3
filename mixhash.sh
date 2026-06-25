@@ -148,8 +148,6 @@ run_simulation "mixhash" "128" "$FLOW_FILE"
 FLOW_FILE="moe_1280group_256to8_8round_8KB_hybrid_192fecmp.txt"
 run_simulation "mixhash" "192" "$FLOW_FILE"
 
-run_simulation "fecmp" "0" "$FLOW_FILE"
-
 # Kill any remaining monitor processes
 cleanup() {
     # DISABLED: Auto-stop commented out

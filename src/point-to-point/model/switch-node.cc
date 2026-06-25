@@ -562,10 +562,9 @@ bool SwitchNode::IsHostPort(uint32_t port) {
 
 // Process packet through reorder buffer, returns true if packet was consumed (buffered/sent)
 bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t outPort) {
-    // Only process UDP packets in mode 16 (mixhash), excluding tag=2
+    // Only process UDP packets in mode 16 (mixhash) - ALL tags use reorder buffer
     if (Settings::lb_mode != 16) return false;  // Only mode 16 uses reorder buffer
     if (ch.l3Prot != 0x11) return false;         // Not UDP, skip processing
-    if (ch.udp.tag == 2) return false;           // tag=2 does NOT use reorder buffer
 
     // Create flow key
     FlowKey flowKey;
@@ -628,14 +627,12 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
         m_reorderStats.total_buffered++;
         stats.packets_buffered++;
 
-        // Debug: Print buffering info for first few buffers
-        if (stats.packets_buffered <= 5) {
-            std::cout << "[REORDER_BUFFER] Sw=" << GetId() << " Flow="
-                      << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
-                      << " counter=" << pkt_counter << " expected=" << buf.expected_counter
-                      << " queue=" << queue_idx << " qsize=" << buf.queues[queue_idx].size()
-                      << " buffered=" << stats.packets_buffered << std::endl;
-        }
+        // Debug: Print buffering info for every reordered (buffered) packet
+        std::cout << "[REORDER_BUFFER] Sw=" << GetId() << " Flow="
+                  << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
+                  << " counter=" << pkt_counter << " expected=" << buf.expected_counter
+                  << " queue=" << queue_idx << " qsize=" << buf.queues[queue_idx].size()
+                  << " buffered=" << stats.packets_buffered << std::endl;
 
         // Update max queue size
         uint32_t current_q_size = buf.queues[queue_idx].size();
@@ -1153,7 +1150,7 @@ void SwitchNode::GetReorderStats(ReorderStats &stats) {
     stats = m_reorderStats;
 }
 
-// Output and clear reorder stats for a specific flow (mode 16, tag=1 only)
+// Output and clear reorder stats for a specific flow (mode 16, all tags)
 void SwitchNode::OutputAndClearFlowReorder(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
     // Only process for mode 16 (mixhash)
     if (Settings::lb_mode != 16) return;

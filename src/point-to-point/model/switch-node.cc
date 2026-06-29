@@ -623,9 +623,23 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
 
         // Buffer the packet in appropriate queue (counter % num_queues) - UNLIMITED queue size
         uint32_t queue_idx = pkt_counter % Settings::reorder_queue_num;
+        uint32_t pkt_bytes = p->GetSize();
         buf.queues[queue_idx].push(p->Copy());  // Store a copy to avoid modification issues
         m_reorderStats.total_buffered++;
         stats.packets_buffered++;
+
+        // Track live switch-wide reorder-buffer occupancy and its concurrent peak
+        m_curReorderPkts++;
+        m_curReorderBytes += pkt_bytes;
+        bool new_peak = false;
+        if (m_curReorderPkts > m_maxReorderPkts) { m_maxReorderPkts = m_curReorderPkts; new_peak = true; }
+        if (m_curReorderBytes > m_maxReorderBytes) { m_maxReorderBytes = m_curReorderBytes; new_peak = true; }
+        if (new_peak) {
+            std::cout << "[REORDER_MEM] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
+                      << "ns cur_pkts=" << m_curReorderPkts << " cur_bytes=" << m_curReorderBytes
+                      << " peak_pkts=" << m_maxReorderPkts << " peak_bytes=" << m_maxReorderBytes
+                      << " active_flows=" << m_flowReorderBuffers.size() << std::endl;
+        }
 
         // Debug: Print buffering info for every reordered (buffered) packet
         std::cout << "[REORDER_BUFFER] Sw=" << GetId() << " Flow="
@@ -669,6 +683,10 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
         if (head_counter == buf.expected_counter) {
             // Dequeue and send
             buf.queues[queue_idx].pop();
+            // Decrease live reorder-buffer occupancy (packet leaves the buffer)
+            m_curReorderPkts--;
+            uint64_t head_bytes = headPkt->GetSize();
+            m_curReorderBytes = (m_curReorderBytes >= head_bytes) ? m_curReorderBytes - head_bytes : 0;
             uint32_t qIndex = headCh.udp.pg;
             DoSwitchSend(headPkt, headCh, outPort, qIndex);
             buf.expected_counter++;
@@ -683,6 +701,10 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
             for (uint32_t i = 0; i < Settings::reorder_queue_num; i++) {
                 total_dropped += buf.queues[i].size();
                 while (!buf.queues[i].empty()) {
+                    // Decrease live reorder-buffer occupancy (packet dropped from buffer)
+                    uint64_t drop_bytes = buf.queues[i].front()->GetSize();
+                    m_curReorderBytes = (m_curReorderBytes >= drop_bytes) ? m_curReorderBytes - drop_bytes : 0;
+                    if (m_curReorderPkts > 0) m_curReorderPkts--;
                     buf.queues[i].pop();
                 }
             }

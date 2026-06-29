@@ -115,6 +115,12 @@ class SwitchNode : public Node {
     // Reorder statistics
     ReorderStats m_reorderStats;     // Statistics for reorder buffer
 
+    // Live reorder-buffer occupancy (across all flows on this switch), for memory peak analysis
+    uint64_t m_curReorderPkts = 0;   // packets currently held in reorder buffer (all flows)
+    uint64_t m_curReorderBytes = 0;  // bytes currently held in reorder buffer (all flows)
+    uint64_t m_maxReorderPkts = 0;   // peak concurrent packets
+    uint64_t m_maxReorderBytes = 0;  // peak concurrent bytes
+
     /* Sending packet to Egress port */
     void DoSwitchSend(Ptr<Packet> p, CustomHeader &ch, uint32_t outDev, uint32_t qIndex);
 

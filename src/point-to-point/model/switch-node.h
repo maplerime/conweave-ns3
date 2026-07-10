@@ -65,12 +65,13 @@ struct FlowReorderStats {
 // Flow reorder buffer for destination ToR (ECMP counter reordering)
 struct FlowReorderBuffer {
     uint16_t expected_counter;              // Next expected counter value
-    std::vector<std::queue<Ptr<Packet>>> queues;  // FIFO queues (index = counter % num_queues)
+    // Lazily-allocated FIFO queues keyed by (counter % num_queues).
+    // A slot is only created when an out-of-order packet is actually buffered,
+    // so an in-order flow allocates no queues at all.
+    std::map<uint16_t, std::queue<Ptr<Packet>>> queues;
     FlowReorderStats stats;                 // Per-flow statistics
 
-    FlowReorderBuffer() : expected_counter(0) {
-        // queues will be resized when buffer is created (in switch-node.cc)
-    }
+    FlowReorderBuffer() : expected_counter(0) {}
 };
 
 // Switch type enumeration

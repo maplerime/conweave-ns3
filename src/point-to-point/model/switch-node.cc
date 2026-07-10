@@ -562,9 +562,10 @@ bool SwitchNode::IsHostPort(uint32_t port) {
 
 // Process packet through reorder buffer, returns true if packet was consumed (buffered/sent)
 bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t outPort) {
-    // Only process UDP packets in mode 16 (mixhash) - ALL tags use reorder buffer
+    // Only process UDP packets in mode 16 (mixhash), and only tag=1 flows use reorder buffer
     if (Settings::lb_mode != 16) return false;  // Only mode 16 uses reorder buffer
     if (ch.l3Prot != 0x11) return false;         // Not UDP, skip processing
+    if (ch.udp.tag != 1) return false;           // Only tag=1 uses reorder buffer
 
     // Create flow key
     FlowKey flowKey;
@@ -579,10 +580,8 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
     FlowReorderStats &stats = m_flowReorderStats[flowKey];
     uint16_t pkt_counter = ch.udp.ecmp_counter;
 
-    // Initialize queues vector if this is a new buffer
-    if (buf.queues.size() != Settings::reorder_queue_num) {
-        buf.queues.resize(Settings::reorder_queue_num);
-    }
+    // Queues are allocated lazily (see FlowReorderBuffer): an in-order flow that
+    // never buffers an out-of-order packet allocates no queue slots at all.
 
     stats.packets_received++;
 
@@ -621,8 +620,24 @@ bool SwitchNode::ProcessReorderBuffer(Ptr<Packet> p, CustomHeader &ch, uint32_t 
             return true;  // Packet consumed (sent directly)
         }
 
-        // Buffer the packet in appropriate queue (counter % num_queues) - UNLIMITED queue size
-        uint32_t queue_idx = pkt_counter % Settings::reorder_queue_num;
+        // Buffer the packet in appropriate queue (counter % num_queues)
+        uint16_t queue_idx = pkt_counter % Settings::reorder_queue_num;
+
+        // Per-queue depth cap: if this queue already holds the max (128), drop the packet.
+        const uint32_t MAX_QUEUE_DEPTH = 128;
+        auto existing = buf.queues.find(queue_idx);
+        if (existing != buf.queues.end() && existing->second.size() >= MAX_QUEUE_DEPTH) {
+            std::cout << "[REORDER_DROP_QFULL] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
+                      << "ns Flow=" << Settings::hostIp2IdMap[ch.sip] << "->" << Settings::hostIp2IdMap[ch.dip]
+                      << " counter=" << pkt_counter << " expected=" << buf.expected_counter
+                      << " queue=" << queue_idx << " qsize=" << existing->second.size()
+                      << " - dropping packet (queue depth >= " << MAX_QUEUE_DEPTH << ")"
+                      << std::endl;
+            m_reorderStats.total_dropped++;
+            stats.packets_dropped++;
+            return true;  // Packet consumed (dropped)
+        }
+
         uint32_t pkt_bytes = p->GetSize();
         buf.queues[queue_idx].push(p->Copy());  // Store a copy to avoid modification issues
         m_reorderStats.total_buffered++;
@@ -666,15 +681,16 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
     FlowReorderStats &stats = m_flowReorderStats[flowKey];
 
     while (true) {
-        uint32_t queue_idx = buf.expected_counter % Settings::reorder_queue_num;
+        uint16_t queue_idx = buf.expected_counter % Settings::reorder_queue_num;
 
-        // Check if corresponding queue has packets
-        if (buf.queues[queue_idx].empty()) {
+        // Check if corresponding queue exists and has packets (no auto-insert)
+        auto qit = buf.queues.find(queue_idx);
+        if (qit == buf.queues.end() || qit->second.empty()) {
             break;
         }
 
         // Peek at the head packet to check its counter
-        Ptr<Packet> headPkt = buf.queues[queue_idx].front();
+        Ptr<Packet> headPkt = qit->second.front();
         CustomHeader headCh(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
         headPkt->PeekHeader(headCh);
         uint16_t head_counter = headCh.udp.ecmp_counter;
@@ -682,11 +698,13 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
         // Check if head packet matches expected counter
         if (head_counter == buf.expected_counter) {
             // Dequeue and send
-            buf.queues[queue_idx].pop();
+            qit->second.pop();
             // Decrease live reorder-buffer occupancy (packet leaves the buffer)
             m_curReorderPkts--;
             uint64_t head_bytes = headPkt->GetSize();
             m_curReorderBytes = (m_curReorderBytes >= head_bytes) ? m_curReorderBytes - head_bytes : 0;
+            // Release the slot once empty so the map only holds active queues
+            if (qit->second.empty()) buf.queues.erase(qit);
             uint32_t qIndex = headCh.udp.pg;
             DoSwitchSend(headPkt, headCh, outPort, qIndex);
             buf.expected_counter++;
@@ -698,16 +716,18 @@ void SwitchNode::FlushReorderQueue(FlowKey &flowKey, FlowReorderBuffer &buf, uin
             // But keep the buffer and expected_counter state for new packets
 
             uint32_t total_dropped = 0;
-            for (uint32_t i = 0; i < Settings::reorder_queue_num; i++) {
-                total_dropped += buf.queues[i].size();
-                while (!buf.queues[i].empty()) {
+            for (auto &kv : buf.queues) {
+                std::queue<Ptr<Packet>> &q = kv.second;
+                total_dropped += q.size();
+                while (!q.empty()) {
                     // Decrease live reorder-buffer occupancy (packet dropped from buffer)
-                    uint64_t drop_bytes = buf.queues[i].front()->GetSize();
+                    uint64_t drop_bytes = q.front()->GetSize();
                     m_curReorderBytes = (m_curReorderBytes >= drop_bytes) ? m_curReorderBytes - drop_bytes : 0;
                     if (m_curReorderPkts > 0) m_curReorderPkts--;
-                    buf.queues[i].pop();
+                    q.pop();
                 }
             }
+            buf.queues.clear();  // release all (now empty) slots
 
             std::cout << "[REORDER_MISMATCH] Sw=" << GetId() << " Time=" << Simulator::Now().GetNanoSeconds()
                       << "ns Flow=" << Settings::hostIp2IdMap[flowKey.sip] << "->" << Settings::hostIp2IdMap[flowKey.dip]

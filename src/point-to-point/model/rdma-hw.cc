@@ -194,7 +194,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     qp->SetTag(tag);
     qp->SetTimeout(m_waitAckTimeout);
 
-    if (m_irn && tag != 1) {
+    if (m_irn) {
         qp->irn.m_enabled = m_irn;
         qp->irn.m_bdp = m_irn_bdp;
         qp->irn.m_rtoLow = m_irn_rtoLow;
